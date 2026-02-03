@@ -1,0 +1,19 @@
+sample_id,cell_count,transcript_count,batch,segmentation
+ko_166,296615,25874602,batch24,Nuclear expansion
+ko_167,268622,20041001,batch24,Nuclear expansion
+ko_168,237119,20379138,batch27,Nuclear expansion
+ctrl_172,96630,11789911,batch27,Nuclear expansion
+ctrl_173,152529,12759206,batch24,Nuclear expansion
+ctrl_174,127088,16575733,batch27,Nuclear expansion
+wt_709,254981,24185954,batch27,Nuclear expansion
+wt_710,237119,20379138,batch27,Nuclear expansion
+wt_713,354711,24061176,batch24,Nuclear expansion
+ko_166,253552,18095041.4553909,batch24,Proseg
+ko_167,236113,15515509.3812851,batch24,Proseg
+ko_168,188325,17187752.4165448,batch27,Proseg
+ctrl_172,75355,11901550.6889078,batch27,Proseg
+ctrl_173,132310,9871326.22312226,batch24,Proseg
+ctrl_174,98109,20435539.0919837,batch27,Proseg
+wt_709,179985,22866106.405168,batch27,Proseg
+wt_710,181804,20223413.8700926,batch27,Proseg
+wt_713,302461,16470615.0908557,batch24,Proseg
