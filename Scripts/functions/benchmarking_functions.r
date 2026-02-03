@@ -1,4 +1,4 @@
-# Required packages are Seurat, data.table, dplyr, ggplot2
+# Required packages are Seurat, Matrix, data.table, dplyr, ggplot2
 
 # helper function to validate if the length of given seurat list matches the length of segmentation options
 validate_segmentation <- function(segmentation, seg_levels, n_objs) {
@@ -25,6 +25,27 @@ validate_segmentation <- function(segmentation, seg_levels, n_objs) {
   invisible(TRUE)
 }
 
+# find the transcripts counts for genes overlapping MERSCOPE and Xenium panels
+add_common_gene_counts <- function(obj, common_genes) {
+  # use dgCMatrix for faster processing
+  counts <- Matrix::Matrix(obj[["Xenium"]]@layers$counts, sparse = TRUE)
+  rownames(counts) <- rownames(obj)
+  
+  # subset the count matrix to the common gene panel
+  counts <- counts[common_genes, ]
+  
+  # aggregate those gene counts
+  common_gene_counts <- Matrix::colSums(counts)
+  common_feature_counts <- Matrix::colSums(counts > 0)
+  
+  # add metadata
+  obj <- Seurat::AddMetaData(
+    obj, 
+    metadata = cbind(common_gene_counts, common_feature_counts), 
+    col.name = c("common_gene_counts", "common_feature_counts")
+  )
+} 
+
 generate_sample_df <- function(merged_seurat_list, segmentation, seg_levels, count_col) {
   # check if segmentation options match
   n <- length(merged_seurat_list)
@@ -38,11 +59,13 @@ generate_sample_df <- function(merged_seurat_list, segmentation, seg_levels, cou
     # syntax Map(function(a, b) {...}, A, B)
     Map(function(obj, seg) {
       dt <- data.table::as.data.table(obj@meta.data)
+      has_common <- "common_gene_counts" %in% names(dt)
       # group cells by sample_id and compute summaries per sample
       # syntax dt[i, j, by]
       dt[, .(
         cell_count = .N, # number of rows in current group, faster than n()
         transcript_count = sum(get(count_col)),
+        common_gene_counts = if (has_common) sum(common_gene_counts) else sum(get(count_col)),
         batch = batch[1],
         segmentation = seg
       ), by = sample_id]
@@ -106,6 +129,8 @@ generate_cell_df <- function(merged_seurat_list, segmentation, seg_levels, count
         sample = gsub("_", "", sample_id),
         nCounts = get(count_col),
         nFeatures = get(feature_col),
+        common_gene_counts = if ("common_gene_counts" %in% names(dt)) common_gene_counts else get(count_col),
+        common_feature_counts = if ("common_feature_counts" %in% names(dt)) common_feature_counts else get(feature_col),
         cell_type = ScType_label_res.0.6,
         cell_area = if("cell_area" %in% colnames(dt)) cell_area else NA_real_,
         aspect_ratio = if("aspect_ratio" %in% colnames(dt)) aspect_ratio else NA_real_,
