@@ -1,0 +1,11 @@
+---
+title: "Benchmark segmentation across imaging ST platforms"
+output: html_document
+date: "2026-02-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/SpatialBench_segmentation_comparison/Data")
+```
+
