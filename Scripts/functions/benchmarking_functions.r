@@ -94,7 +94,7 @@ generate_cell_df <- function(obj, segmentation, count_col, feature_col) {
   )]
 }
 
-extract_cell_and_sample_df <- function(
+extract_sample_and_cell_df <- function(
     file_path,
     segmentation,
     count_col,
@@ -122,6 +122,35 @@ extract_cell_and_sample_df <- function(
     sample_df = sample_df,
     cell_df = cell_df
   )
+}
+
+save_sample_and_cell_df <- function(sample_info, out_path) {
+  metadata <- sample_info %>% 
+    mutate(
+      out = purrr::pmap(
+        list(file_path, segmentation, count_col, feature_col),
+        extract_sample_and_cell_df
+      )
+    ) %>% 
+    tidyr::unnest_wider(out)
+  
+  sample_df <- metadata %>% 
+    group_by(platform, model) %>% 
+    group_modify(~{data.table::rbindlist(.x$sample_df)})
+  
+  cell_df <- metadata %>% 
+    group_by(platform, model) %>% 
+    group_modify(~{
+      # remove extra attributes for log10_signal_density_outlier_sc
+      clean_list <- map(.x$cell_df, ~{
+        class(.x$log10_signal_density_outlier_sc) <- "character"
+        .x
+      })
+      data.table::rbindlist(clean_list)
+    })
+  
+  write.csv(sample_df, file = file.path(out_path, "sample_df.csv"), row.names = FALSE)
+  data.table::fwrite(cell_df, file = file.path(out_path, "cell_df.csv.gz"), row.names = FALSE)
 }
 
 
