@@ -98,9 +98,7 @@ extract_cell_and_sample_df <- function(
     file_path,
     segmentation,
     count_col,
-    feature_col,
-    platform,
-    model
+    feature_col
 ) {
   obj <- readRDS(file_path)
   
