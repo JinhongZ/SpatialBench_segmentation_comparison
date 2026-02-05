@@ -94,6 +94,40 @@ generate_cell_df <- function(obj, segmentation, count_col, feature_col) {
   )]
 }
 
+extract_cell_and_sample_df <- function(
+    file_path,
+    segmentation,
+    count_col,
+    feature_col,
+    platform,
+    model
+) {
+  obj <- readRDS(file_path)
+  
+  sample_df <- generate_sample_df_one(
+    obj,
+    segmentation = segmentation,
+    platform = platform,
+    model = model
+  )
+  
+  cell_df <- generate_cell_df(
+    obj,
+    segmentation = segmentation,
+    count_col   = count_col,
+    feature_col = feature_col
+  )
+  
+  rm(obj)
+  gc()
+  
+  list(
+    sample_df = sample_df,
+    cell_df = cell_df
+  )
+}
+
+
 # --- plots for sample-level quality metrics
 sample_boxplot <- function(df, metric, label) {
   ggplot(df, 
