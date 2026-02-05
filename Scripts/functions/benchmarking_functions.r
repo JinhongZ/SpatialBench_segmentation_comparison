@@ -104,11 +104,10 @@ extract_cell_and_sample_df <- function(
 ) {
   obj <- readRDS(file_path)
   
-  sample_df <- generate_sample_df_one(
+  sample_df <- generate_sample_df(
     obj,
     segmentation = segmentation,
-    platform = platform,
-    model = model
+    count_col = count_col
   )
   
   cell_df <- generate_cell_df(
