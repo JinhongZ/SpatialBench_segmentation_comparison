@@ -155,13 +155,21 @@ save_sample_and_cell_df <- function(sample_info, out_path) {
 
 
 # --- plots for sample-level quality metrics
+colour_panel <- c(
+  "Cellpose1" = "#F8766D",
+  "Proseg" = "#00BA38",
+  "Cellpose2" = "#619CFF",
+  "Nuclear expansion" = "#00BFC4"
+)
+
 sample_boxplot <- function(df, metric, label) {
   ggplot(df, 
          aes(x = segmentation, y = .data[[metric]], fill = segmentation)) +
     geom_boxplot(outliers = FALSE) + 
     geom_jitter(width = 0.1, height = 0.1) + 
     # geom_line(aes(group = sample_id), colour = "darkred", linewidth = 0.5, alpha = 0.7) +
-    scale_fill_manual(values = scales::hue_pal()(3)) +
+    scale_fill_manual(values = colour_panel) +
+    facet_wrap(~platform_version) + 
     labs(x = "Segmentation",
          y = label) + 
     # scale_y_continuous(n.breaks = 8, labels = comma) + 
@@ -182,18 +190,22 @@ cell_violin_plot <- function(cell_df, metric, label) {
     geom_boxplot(aes(group = interaction(sample, segmentation)), 
                  width = 0.15, outlier.shape = NA, fill = "white", color = "black",
                  position = position_dodge(0.9)) +
-    scale_fill_manual(values = scales::hue_pal()(3)) +
+    scale_fill_manual(values = colour_panel) +
+    facet_wrap(~platform_version) + 
     labs(x = "Samples",
          y = label,
          fill = "Segmentation") + 
     scale_y_continuous(n.breaks = 8) + 
     theme_bw() + 
-    theme(legend.position = "none")
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
 }
 
 cell_median_boxplot <- function(cell_df, metric, label, jitter_width = NULL, jitter_height = NULL) {
   median_df <- cell_df %>% 
-    group_by(segmentation, sample) %>% 
+    group_by(platform_version, segmentation, sample) %>% 
     summarise(
       median_value = median(.data[[metric]], na.rm = TRUE),
       .groups = "drop"
@@ -212,7 +224,8 @@ cell_median_boxplot <- function(cell_df, metric, label, jitter_width = NULL, jit
   ) +
     geom_boxplot(outliers = FALSE) +
     jitter_layer +
-    scale_fill_manual(values = scales::hue_pal()(3)) +
+    scale_fill_manual(values = colour_panel) +
+    facet_wrap(~platform_version) + 
     labs(x = "Segmentation", 
          y = paste("Median", label)) + 
     theme_bw() +
