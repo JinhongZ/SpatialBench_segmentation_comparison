@@ -29,5 +29,8 @@ sample_info <- tribble(
   )
 
 out_path = "~/SpatialBench_segmentation_comparison/Data"
-save_sample_and_cell_df(sample_info, out_path = out_path)
+merscope_obj <- readRDS(sample_info$file_path[1])
+common_genes <- rownames(merscope_obj)
+
+save_sample_and_cell_df(sample_info, common_genes = common_genes, out_path = out_path)
   
