@@ -7,7 +7,7 @@ add_common_gene_counts <- function(obj, common_genes) {
   rownames(counts) <- rownames(obj)
   
   # subset the count matrix to the common gene panel
-  counts <- counts[common_genes, ]
+  counts <- counts[intersect(rownames(counts), common_genes), , drop = FALSE]
   
   # aggregate those gene counts
   common_gene_counts <- Matrix::colSums(counts)
@@ -16,9 +16,13 @@ add_common_gene_counts <- function(obj, common_genes) {
   # add metadata
   obj <- Seurat::AddMetaData(
     obj, 
-    metadata = cbind(common_gene_counts, common_feature_counts), 
-    col.name = c("common_gene_counts", "common_feature_counts")
+    metadata = data.frame(
+      common_gene_counts = common_gene_counts,
+      common_feature_counts = common_feature_counts
+    )
   )
+  
+  return(obj)
 } 
 
 generate_sample_df <- function(obj, segmentation, count_col) {
@@ -30,8 +34,8 @@ generate_sample_df <- function(obj, segmentation, count_col) {
   # syntax dt[i, j, by]
   dt[, .(
     cell_count = .N, # number of rows in current group, faster than n()
-    transcript_count = sum(get(count_col)),
-    common_gene_counts = if (has_common) sum(common_gene_counts) else sum(get(count_col)),
+    transcript_count = sum(get(count_col), na.rm = TRUE),
+    common_gene_counts = if (has_common) sum(common_gene_counts, na.rm = TRUE) else sum(get(count_col), na.rm = TRUE),
     batch = batch[1],
     segmentation = segmentation
   ), by = sample_id]
@@ -102,6 +106,10 @@ extract_sample_and_cell_df <- function(
 ) {
   obj <- readRDS(file_path)
   
+  if (grepl("Xenium", file_path)) {
+    obj <- add_common_gene_counts(obj, common_genes)
+  }
+  
   sample_df <- generate_sample_df(
     obj,
     segmentation = segmentation,
@@ -124,7 +132,7 @@ extract_sample_and_cell_df <- function(
   )
 }
 
-save_sample_and_cell_df <- function(sample_info, out_path) {
+save_sample_and_cell_df <- function(sample_info, common_genes, out_path) {
   metadata <- sample_info %>% 
     mutate(
       out = purrr::pmap(
@@ -136,18 +144,19 @@ save_sample_and_cell_df <- function(sample_info, out_path) {
   
   sample_df <- metadata %>% 
     group_by(platform, model) %>% 
-    group_modify(~{data.table::rbindlist(.x$sample_df)})
+    group_modify(~data.table::rbindlist(.x$sample_df, fill = TRUE))
   
   cell_df <- metadata %>% 
     group_by(platform, model) %>% 
     group_modify(~{
-      # remove extra attributes for log10_signal_density_outlier_sc
-      clean_list <- map(.x$cell_df, ~{
-        class(.x$log10_signal_density_outlier_sc) <- "character"
-        .x
+      clean_list <- lapply(.x$cell_df, function(dt) {
+        dt[, log10_signal_density_outlier_sc :=
+             as.character(log10_signal_density_outlier_sc)]
+        dt
       })
-      data.table::rbindlist(clean_list)
+      data.table::rbindlist(clean_list, fill = TRUE)
     })
+  
   
   write.csv(sample_df, file = file.path(out_path, "sample_df.csv"), row.names = FALSE)
   data.table::fwrite(cell_df, file = file.path(out_path, "cell_df.csv.gz"), row.names = FALSE)
