@@ -41,45 +41,6 @@ generate_sample_df <- function(obj, segmentation, count_col) {
   ), by = sample_id]
 }
 
-# This function is only suitable for Xenium data
-generate_transcripts_assigned <- function(dir_list, segmentation) {
-  # check if segmentation options match
-  seg_levels <- c("Nuclear expansion", "Proseg", "Cellpose2")
-  n <- length(dir_list)
-  validate_segmentation(segmentation, seg_levels, n)
-  
-  segmentation <- factor(segmentation, levels = seg_levels)
-  
-  data.table::rbindlist(
-    Map(function(dir, seg) {
-      summary_info <- read.csv(dir)
-      if (grepl("Proseg", dir)) {
-        summary_info <- summary_info %>% 
-          filter(
-            obj_name %in% c(
-              "Batch24__0011456__Region_1.rds",
-              "Batch24__0011456__Region_2.rds",
-              "Batch24__0011456__Region_3.rds",
-              "Batch24__0011456__Region_4.rds",
-              "Batch27__0017329__Region_1.rds",
-              "Batch27__0017329__Region_2.rds",
-              "Batch27__0017329__Region_3.rds",
-              "Batch27__0017329__Region_4.rds",
-              "Batch27__0017329__Region_5.rds"
-            )
-          )
-      }
-      dt <- data.table::as.data.table(summary_info)
-      dt[, .(
-        pt_transcripts_assigned, 
-        sample,
-        segmentation = seg
-      )]
-    }, dir_list, segmentation),
-    use.names = TRUE
-  )
-}
-
 generate_cell_df <- function(obj, segmentation, count_col, feature_col) {
   # extract cell metadata
   dt <- data.table::as.data.table(obj@meta.data)
