@@ -25,7 +25,7 @@ add_common_gene_counts <- function(obj, common_genes) {
   return(obj)
 } 
 
-generate_sample_df <- function(obj, segmentation, count_col) {
+generate_sample_df <- function(obj, segmentation_clean, count_col) {
   # extract cell metadata
   dt <- data.table::as.data.table(obj@meta.data)
   has_common <- "common_gene_counts" %in% names(dt)
@@ -37,11 +37,11 @@ generate_sample_df <- function(obj, segmentation, count_col) {
     transcript_count = sum(get(count_col), na.rm = TRUE),
     common_gene_counts = if (has_common) sum(common_gene_counts, na.rm = TRUE) else sum(get(count_col), na.rm = TRUE),
     batch = batch[1],
-    segmentation = segmentation
+    segmentation_clean = segmentation_clean
   ), by = sample_id]
 }
 
-generate_cell_df <- function(obj, segmentation, count_col, feature_col) {
+generate_cell_df <- function(obj, segmentation_clean, count_col, feature_col) {
   # extract cell metadata
   dt <- data.table::as.data.table(obj@meta.data)
   dt[, .(
@@ -55,13 +55,13 @@ generate_cell_df <- function(obj, segmentation, count_col, feature_col) {
     aspect_ratio = if("aspect_ratio" %in% colnames(dt)) aspect_ratio else NA_real_,
     log10_signal_density = if("log10_signal_density" %in% colnames(dt)) log10_signal_density else NA_real_,
     log10_signal_density_outlier_sc = if("log10_signal_density_outlier_sc" %in% colnames(dt)) log10_signal_density_outlier_sc else NA_real_,
-    segmentation = segmentation
+    segmentation_clean = segmentation_clean
   )]
 }
 
 extract_sample_and_cell_df <- function(
     file_path,
-    segmentation,
+    segmentation_clean,
     count_col,
     feature_col
 ) {
@@ -73,13 +73,13 @@ extract_sample_and_cell_df <- function(
   
   sample_df <- generate_sample_df(
     obj,
-    segmentation = segmentation,
+    segmentation_clean = segmentation_clean,
     count_col = count_col
   )
   
   cell_df <- generate_cell_df(
     obj,
-    segmentation = segmentation,
+    segmentation_clean = segmentation_clean,
     count_col   = count_col,
     feature_col = feature_col
   )
@@ -97,7 +97,7 @@ save_sample_and_cell_df <- function(sample_info, common_genes, out_path) {
   metadata <- sample_info %>% 
     mutate(
       out = purrr::pmap(
-        list(file_path, segmentation, count_col, feature_col),
+        list(file_path, segmentation_clean, count_col, feature_col),
         extract_sample_and_cell_df
       )
     ) %>% 
@@ -126,10 +126,9 @@ save_sample_and_cell_df <- function(sample_info, common_genes, out_path) {
 
 # --- plots for sample-level quality metrics
 colour_panel <- c(
-  "Cellpose1" = "#F8766D",
+  "Default" = "#F8766D",
   "Proseg" = "#00BA38",
-  "Cellpose2" = "#619CFF",
-  "Nuclear expansion" = "#00BFC4"
+  "Cellpose2" = "#619CFF"
 )
 
 sample_boxplot <- function(df, metric, label, jitter_width = NULL, jitter_height = NULL) {
@@ -141,7 +140,7 @@ sample_boxplot <- function(df, metric, label, jitter_width = NULL, jitter_height
   jitter_layer <- geom_jitter(width = jitter_width, height = jitter_height)
   
   ggplot(df, 
-         aes(x = segmentation, y = .data[[metric]], fill = segmentation)) +
+         aes(x = segmentation_clean, y = .data[[metric]], fill = segmentation_clean)) +
     geom_boxplot(outliers = FALSE) + 
     jitter_layer + 
     # geom_line(aes(group = sample_id), colour = "darkred", linewidth = 0.5, alpha = 0.7) + # uncomment to have lines connected by sample_id
@@ -162,17 +161,17 @@ sample_boxplot <- function(df, metric, label, jitter_width = NULL, jitter_height
 cell_violin_plot <- function(cell_df, metric, label) {
   ggplot(
     cell_df, 
-    aes(x = sample, y = .data[[metric]], fill = segmentation)
+    aes(x = sample, y = .data[[metric]], fill = segmentation_clean)
   ) + 
     geom_violin(trim = FALSE, scale = "width") + 
-    geom_boxplot(aes(group = interaction(sample, segmentation)), 
+    geom_boxplot(aes(group = interaction(sample, segmentation_clean)), 
                  width = 0.15, outlier.shape = NA, fill = "white", color = "black",
                  position = position_dodge(0.9)) +
     scale_fill_manual(values = colour_panel) +
     facet_wrap(~platform_version) + 
     labs(x = "Samples",
          y = label,
-         fill = "Segmentation") + 
+         fill = "segmentation_clean") + 
     scale_y_continuous(n.breaks = 8) + 
     theme_bw() + 
     theme(
@@ -183,7 +182,7 @@ cell_violin_plot <- function(cell_df, metric, label) {
 
 cell_median_boxplot <- function(cell_df, metric, label, jitter_width = NULL, jitter_height = NULL) {
   median_df <- cell_df %>% 
-    group_by(platform_version, segmentation, sample) %>% 
+    group_by(platform_version, segmentation_clean, sample) %>% 
     summarise(
       median_value = median(.data[[metric]], na.rm = TRUE),
       .groups = "drop"
@@ -198,7 +197,7 @@ cell_median_boxplot <- function(cell_df, metric, label, jitter_width = NULL, jit
   
   ggplot(
     median_df, 
-    aes(x = segmentation, y = .data[["median_value"]], fill = segmentation)
+    aes(x = segmentation_clean, y = .data[["median_value"]], fill = segmentation_clean)
   ) +
     geom_boxplot(outliers = FALSE) +
     jitter_layer +
@@ -235,7 +234,7 @@ combine_DimPlot <- function(seurat_list, group.by = "ScType_label_res.0.6", cols
   return(combined_plot)
 }
 
-# customised function for cropping as latest Seurat (v5.4.0) does not support segmentation overlaying 
+# customised function for cropping as latest Seurat (v5.4.0) does not support segmentation_clean overlaying 
 # fov = Seurat FOV object, 
 # x = range of x_coords after cropping, 
 # y = range of y_coords after cropping
