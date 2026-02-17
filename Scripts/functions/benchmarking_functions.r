@@ -260,24 +260,24 @@ combine_ImageDimPlot <- function(
     group.by = "ScType_label_res.0.6", 
     cols, 
     rect_bounds = NULL,
-    boundaries = NULL,
-    crop = FALSE
+    crop_bounds = NULL,
+    boundaries = NULL
 ) {
   # precompute cropped FOVs once for all Seurat objects
   roi_list <- NULL
-  if (crop && !is.null(rect_bounds)) {
+  if (!is.null(crop_bounds)) {
     roi_list <- lapply(seurat_list, function(obj) {
       crop_fov(
         obj[[fov]],
-        x = c(rect_bounds$xmin, rect_bounds$xmax),
-        y = c(rect_bounds$ymin, rect_bounds$ymax)
+        x = c(crop_bounds$ymin, crop_bounds$ymax),
+        y = c(crop_bounds$xmin, crop_bounds$xmax)
       )
     })
   }
   
   # create rectangle layer if provided
   rect_layer <- NULL
-  if (is.null(rect_bounds)) {
+  if (!is.null(rect_bounds)) {
     rect_layer <- geom_rect(
       aes(xmin = rect_bounds$xmin, xmax = rect_bounds$xmax,
           ymin = rect_bounds$ymin, ymax = rect_bounds$ymax),
@@ -290,7 +290,7 @@ combine_ImageDimPlot <- function(
     obj <- seurat_list[[i]]
     
     # update fov if roi is provided
-    if (crop && !is.null(roi_list)) {
+    if (!is.null(roi_list)) {
       obj[["roi"]] <- roi_list[[i]]
       fov_use <- "roi"
     } else {
