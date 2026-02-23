@@ -15,19 +15,33 @@ marker_list_ann <- list(
   `Erythrocyte-like` = c("Tpx2", "Rrm1", "Ezh2", "Cdca8", "Pola1", "Ccnd3") # NB: the gene panel does not have strong markers for erythrocytes, those are found from single cell reference subset to MERSCOPE gene panel
 )
 
+# customised marker list (ensures all markers present in both gene panesl)
+marker_list_cus <- list(
+  `Macrophages` = c("Adgre1","Cd209b","Cd274","Cd68","Cd80","Csf1r"),
+  `B cells` = c("Cd19","Cd22","Cr2","Ighd","Fcer2a","Cd72","Bcr"),
+  `GC B cells` = c("Bcl6","Aicda","Rgs13","Cd83"),
+  `Neutrophils` = c("Ngp","S100a9"),
+  `Plasma cells` = c("Cd38","Jchain"),
+  `T cells` = c("Cd3d","Cd3e","Cd4","Cd8a","Trac"),
+  `NK cells` = c("Ncr1","Gzma"),
+  `Dendritic cells` = c("Siglech", "Ffar2", "Cox6a2"),
+  `Endothelial cells` = c("Egfl7"),
+  `Fibroblastic reticular cells` = c("Ccl19"),
+  `Erythrocyte-like` = c("Tpx2", "Rrm1", "Ezh2", "Cdca8", "Pola1", "Ccnd3")
+)
+
 # set up markers for mutually exclusive correlation rate
 marker_df_spleen_panel <- data.frame(
-  gene = unlist(marker_list_ann),
-  cell_type = rep(names(marker_list_ann), times = lengths(marker_list_ann)),
-  row.names = unlist(marker_list_ann)
+  gene = unlist(marker_list_cus),
+  cell_type = rep(names(marker_list_cus), times = lengths(marker_list_cus)),
+  row.names = unlist(marker_list_cus)
 )
 
 # function slightly modified from (https://github.com/Center-for-Spatial-OMICs/SpatialQM/blob/60b9217cdab5f95c8f34a7261fe76d1bbbcefebf/R/utils_update_final.R#L1729)
 getMECR_panel <- function(seu_obj,
                           assay_use = NULL,
                           layer_use = c("counts","data"),
-                          marker_df = marker_df_spleen_panel,
-                          max_genes = 25) {
+                          marker_df = marker_df_spleen_panel) {
   
   stopifnot(!is.null(seu_obj))
   

@@ -30,4 +30,4 @@ for (i in 1:nrow(data_info)) {
   MECR_info[[paste(plat, seg, sep = "_")]] <- getMECR_panel(obj, assay_use = assay, layer_use = "counts")
 }
 
-saveRDS(MECR_info, file = "~/SpatialBench_segmentation_comparison/Data/MECR_info.rds")
+saveRDS(MECR_info, file = "~/SpatialBench_segmentation_comparison/Data/MECR_info_customised.rds")
