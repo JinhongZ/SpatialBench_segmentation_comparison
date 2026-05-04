@@ -3,3 +3,4 @@
 .RData
 .Ruserdata
 Data/sce.labelled.fine.RDS
+Scripts/benchmarking/*.out
