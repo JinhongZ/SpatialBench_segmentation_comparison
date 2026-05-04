@@ -1412,6 +1412,29 @@ ggsave("~/data/figures/celltype_composition_by_platform.pdf", plot = celltype_co
 celltype_composition_by_platform
 ```
 
+Cell composition per segmentation per platform
+
+```{r fig.width=7, fig.height=4}
+median_celltype_prop <- celltype_prop %>% 
+  group_by(platform_version, segmentation_clean, cell_type) %>% 
+  summarise(median_prop = median(prop), .groups = "drop")
+celltype_prop_by_seg <- ggplot(
+  median_celltype_prop,
+  aes(x = segmentation_clean, y = median_prop, fill = cell_type)
+) +
+  geom_col() + 
+  scale_fill_manual(values = cols) + 
+  facet_wrap(~platform_version, nrow = 1) + 
+  labs(x = "Segmentation",
+       y = "Cell proprotion",
+       fill = "Cell type") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("~/SpatialBench_segmentation_comparison/Figures/celltype_prop_by_seg.pdf", celltype_prop_by_seg, width = 7, height = 4)
+celltype_prop_by_seg
+```
+
+
 ## Bar plot
 
 ```{r fig.width=6, fig.height=12}
