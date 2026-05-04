@@ -1412,7 +1412,7 @@ ggsave("~/data/figures/celltype_composition_by_platform.pdf", plot = celltype_co
 celltype_composition_by_platform
 ```
 
-## Box plot
+## Bar plot
 
 ```{r fig.width=6, fig.height=12}
 ggplot(
