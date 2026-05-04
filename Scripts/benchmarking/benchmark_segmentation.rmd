@@ -9,3 +9,2830 @@ knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_knit$set(root.dir = "~/SpatialBench_segmentation_comparison/Data")
 ```
 
+# Load packages
+
+```{r}
+suppressPackageStartupMessages({
+  library(Seurat) # v5.4.0
+  library(future)
+  library(future.apply)
+  library(ggplot2)
+  library(ggrepel)
+  library(scales) # for improving plot visualisation
+  library(dplyr)
+  library(tibble)
+  library(tidyr)
+  library(purrr)
+  library(data.table)
+  library(patchwork) # for plot aggregation
+})
+```
+
+# Load data
+
+## Load Seurat objects
+
+```{r}
+main_dir <- "/vast/scratch/users/zhang.ji/data"
+merscope_sub_dir <- "Merscope_seurat/vizgen_ctrl_wt_ko_annotated.rds"
+merscope_vizgen <- readRDS(file.path(main_dir, "default_segmentation", merscope_sub_dir))
+merscope_proseg <- readRDS(file.path(main_dir, "proseg_segmentation", merscope_sub_dir))
+merscope_cellpose <- readRDS(file.path(main_dir, "cellpose_segmentation", merscope_sub_dir))
+```
+
+```{r}
+xenium_uni_sub_dir <- "Xenium_seurat/unimodal/xenium_ctrl_wt_ko_annotated.rds"
+xenium_uni_default <- readRDS(file.path(main_dir, "default_segmentation", xenium_uni_sub_dir))
+xenium_uni_proseg <- readRDS(file.path(main_dir, "proseg_segmentation", xenium_uni_sub_dir))
+```
+
+```{r}
+xenium_multi_sub_dir <- c(
+  "default_segmentation/Xenium_seurat/multimodal/xenium_ctrl_wt_ko_annotated.rds",
+  "proseg_segmentation/Xenium_seurat/multimodal/xenium_ctrl_wt_ko_annotated.rds",
+  "cellpose_segmentation/Xenium_seurat/xenium_ctrl_wt_ko_annotated.rds"
+)
+xenium_multi_default <- readRDS(file.path(main_dir, xenium_multi_sub_dir[1]))
+xenium_multi_proseg <- readRDS(file.path(main_dir, xenium_multi_sub_dir[2]))
+xenium_multi_cellpose <- readRDS(file.path(main_dir, xenium_multi_sub_dir[3]))
+```
+
+## Load sample-level and cell-level data information
+
+```{r}
+sample_df <- read.csv("sample_df.csv") %>% 
+  mutate(
+    platform_version = case_when(
+      is.na(model) ~ platform, 
+      .default = paste(platform, model)), 
+    segmentation_clean = case_when(
+      segmentation %in% c("Cellpose1", "Nuclear expansion") ~ "Default",
+      .default = segmentation
+    )
+  )
+sample_df$segmentation_clean <- factor(
+  sample_df$segmentation_clean,
+  levels = c("Default", "Proseg", "Cellpose2")
+)
+
+assignment_info <- read.csv("assignment_info.csv") %>% 
+  mutate(
+    platform_version = case_when(
+      is.na(model) ~ platform, 
+      .default = paste(platform, model)), 
+    segmentation_clean = case_when(
+      segmentation %in% c("Cellpose1", "Nuclear expansion") ~ "Default",
+      .default = segmentation
+    )
+  )
+assignment_info$segmentation_clean <- factor(
+  assignment_info$segmentation_clean,
+  levels = c("Default", "Proseg", "Cellpose2")
+)
+
+cell_df <- data.table::fread("cell_df.csv.gz") %>% 
+  mutate(
+    platform_version = case_when(
+      model == "" ~ platform, 
+      .default = paste(platform, model)), 
+    segmentation_clean = case_when(
+      segmentation %in% c("Cellpose1", "Nuclear expansion") ~ "Default",
+      .default = segmentation
+    )
+  )
+cell_df$segmentation_clean <- factor(
+  cell_df$segmentation_clean,
+  levels = c("Default", "Proseg", "Cellpose2")
+)
+```
+
+# Load functions
+
+```{r}
+source("../Scripts/functions/benchmarking_functions.r")
+```
+
+# Basic statistics
+
+## Sample-level quality metrics
+
+Subset to common samples and segmentation methods across platforms.
+
+```{r}
+# sample-level data frame
+common_samples <- sample_df %>% 
+  filter(platform_version != "Xenium unimodal") %>% 
+  pull(sample_id) %>% 
+  unique()
+
+sample_df_filtered <- sample_df %>% 
+  filter(
+    platform_version != "Xenium unimodal", 
+    sample_id %in% common_samples
+  )
+head(sample_df_filtered)
+```
+
+```{r}
+# assignment information data
+common_samples <- assignment_info %>% 
+  filter(platform_version == "Xenium multimodal") %>% 
+  pull(sample) %>% 
+  unique()
+
+assignment_info_filtered <- assignment_info %>% 
+  filter(
+    platform_version != "Xenium unimodal",
+    sample %in% common_samples,
+  )
+head(assignment_info)
+```
+
+
+### Total cell counts
+
+```{r}
+total_cell_counts_filtered <- sample_boxplot(
+  sample_df_filtered, 
+  metric = "cell_count", 
+  label = "Total cell counts"
+)
+total_cell_counts_filtered
+```
+
+### Total transcriopt counts
+
+```{r}
+total_transcript_counts_filtered_common <- sample_boxplot(
+  sample_df_filtered, 
+  metric = "common_gene_counts", 
+  label = "Total transcript counts (common genes)"
+)
+total_transcript_counts_filtered_common
+```
+
+### Percentage of transcripts assigned
+
+```{r}
+pt_assignment_filtered_common <- sample_boxplot(
+  assignment_info_filtered,
+  metric = "pt_assignment_common", 
+  label = "% Transcripts assigned to cell (common genes)",
+  jitter_width = 0.001,
+  jitter_height = 0.001
+) + coord_cartesian(ylim = c(0, 100))
+pt_assignment_filtered_common
+```
+
+### All-in-one
+
+```{r fig.width=12, fig.height=4}
+sample_level_quality_metrics_common_filtered <- total_cell_counts_filtered | total_transcript_counts_filtered_common | pt_assignment_filtered_common 
+ggsave("~/data/figures/sample_level_quality_metrics_common_filtered.pdf", plot = sample_level_quality_metrics_common_filtered, width = 12, height = 4)
+
+sample_level_quality_metrics_common_filtered
+```
+
+## Cell-level quality metrics
+
+Subset to common samples and segmentation across platforms.
+
+```{r}
+common_samples <- cell_df %>% 
+  filter(platform_version == "Xenium multimodal") %>% 
+  pull(sample) %>% 
+  unique()
+
+cell_df_filtered <- cell_df %>% 
+  filter(
+    platform_version != "Xenium unimodal",
+    sample %in% common_samples
+  )
+
+head(cell_df_filtered)
+```
+
+
+### Counts per cell
+
+Inspect extreme high counts per cell across samples
+
+```{r}
+cell_df_filtered %>% 
+  group_by(platform_version, segmentation_clean, sample) %>% 
+  summarise(pt = mean(nCounts > 3000) * 100,
+            .groups = "drop") %>% 
+  arrange(desc(pt))
+```
+
+
+```{r fig.width=12, fig.height=4}
+counts_per_cell_filtered_common <- cell_violin_plot(
+  cell_df_filtered %>% 
+    filter(common_gene_counts <= 3000),
+  metric = "common_gene_counts",
+  label = "Counts per cell (common genes)"
+)
+counts_per_cell_filtered_common
+```
+
+```{r}
+median_counts_per_cell_filtered_common <- cell_median_boxplot(
+  cell_df_filtered,
+  metric = "common_gene_counts",
+  label = "counts per cell (common genes)"
+)
+median_counts_per_cell_filtered_common
+```
+
+### Genes per cell
+
+```{r fig.width=12, fig.height=4}
+genes_per_cell_filtered_common <- cell_violin_plot(
+  cell_df_filtered,
+  metric = "common_feature_counts",
+  label = "Genes per cell (common genes)"
+)
+genes_per_cell_filtered_common
+```
+
+```{r}
+median_genes_per_cell_filtered_common <- cell_median_boxplot(
+  cell_df_filtered,
+  metric = "common_feature_counts",
+  label = "genes per cell (common genes)"
+) + scale_y_continuous(limits = c(0, 91), n.breaks = 8) + 
+  geom_hline(yintercept = 18, linetype = "dashed", colour = "brown")
+median_genes_per_cell_filtered_common
+```
+
+### All-in-one
+
+```{r fig.width=15, fig.height=8}
+layout <- "
+AAAAABB
+#######
+CCCCCDD
+"
+
+cell_level_quality_metrics_filtered_common <- wrap_plots(list(
+  counts_per_cell_filtered_common, 
+  median_counts_per_cell_filtered_common,
+  genes_per_cell_filtered_common,
+  median_genes_per_cell_filtered_common
+)) + 
+  plot_layout(design = layout, heights = c(1, 0.2, 1))
+
+ggsave("~/data/figures/cell_level_quality_metrics_filtered_common.pdf", plot = cell_level_quality_metrics_filtered_common, width = 15, height = 8)
+cell_level_quality_metrics_filtered_common
+```
+
+## Morphological metrics
+
+### Cell area
+
+Inspect cells with extreme areas based on identified cell types (they should not be greater than 500 $\mu m^2$).
+
+```{r}
+cell_df_filtered %>% 
+  group_by(platform_version, segmentation, sample) %>% 
+  summarise(pt = mean(cell_area > 500) * 100,
+            .groups = "drop") %>% 
+  arrange(desc(pt))
+```
+
+```{r fig.width=12, fig.height=4}
+cell_area_filtered <- cell_violin_plot(
+  cell_df_filtered %>% 
+    filter(cell_area <= 500),
+  metric = "cell_area",
+  label = ""
+) + ylab(expression("Cell area ("*µm^2*")"))
+cell_area_filtered
+```
+
+```{r}
+median_cell_area_filtered <- cell_median_boxplot(
+  cell_df_filtered,
+  metric = "cell_area",
+  label = ""
+) + ylab(expression("Median cell area ("*µm^2*")"))
+median_cell_area_filtered
+```
+
+#### Cell-type specific
+
+```{r}
+median_celltype_filtered_df <- cell_df_filtered %>% 
+  group_by(platform_version, segmentation_clean, sample, cell_type) %>% 
+  summarise(
+    area_median = median(cell_area), 
+    nCounts_median = median(common_gene_counts),
+    nFeatures_median = median(common_feature_counts),
+    .groups = "drop"
+  )
+```
+
+```{r fig.width=20, fig.height=4}
+median_celltype_area_filtered_plot <- ggplot(
+  median_celltype_filtered_df, 
+  aes(x = platform_version, y = area_median, fill = segmentation_clean)) +
+  geom_boxplot(outliers = F) +
+  geom_jitter(
+    position = position_jitterdodge(
+      jitter.width = 0.1, 
+      jitter.height = 0.1, 
+      dodge.width = 0.75
+    ), 
+    size = 0.5
+  ) + 
+  scale_fill_manual(values = colour_panel) + 
+  facet_wrap(~cell_type, nrow = 1) + 
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +  # y starts at 0
+  coord_cartesian(ylim = c(0, NA)) +  # force y=0 lower bound, free upper bound
+  labs(
+    x = "Platform", 
+    y = expression("Median cell area ("*µm^2*")")
+  ) + 
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+ggsave("~/data/figures/median_celltype_area_filtered_plot.pdf", plot = median_celltype_area_filtered_plot, width = 20, height = 4)
+
+median_celltype_area_filtered_plot
+```
+
+Add cell-type specific reference area ranges.
+
+```{r fig.width=20, fig.height=4}
+# set cell order to display
+median_celltype_filtered_df$cell_type <- factor(
+  median_celltype_filtered_df$cell_type,
+  levels = c("B cells", "T cells", "GC B cells", "Plasma cells",
+             "Macrophages", "Neutrophils", "Erythrocyte-like", 
+             "Dendritic cells", "Endothelial cells", "NK cells",
+             "Fibroblastic reticular cells")
+)
+
+# with referenced cell area
+ref_cell_area <- data.frame(
+  cell_type = c("T cells", "B cells", "Macrophages", "Erythrocyte-like", 
+                "Neutrophils", "GC B cells", "Plasma cells", "Dendritic cells", 
+                "Endothelial cells", "NK cells", "Fibroblastic reticular cells"),
+  low_bound = c(37.83, 15.9, 103.87, 29.71, 126.68, NA, 38.48, rep(NA, 4)),
+  up_bound = c(75.12, 75.12, 203.58, 35.78, 169.72, NA, 201.06, rep(NA, 4))
+)
+ref_cell_area$cell_type <- factor(
+  ref_cell_area$cell_type,
+  levels = c("B cells", "T cells", "GC B cells", "Plasma cells",
+             "Macrophages", "Neutrophils", "Erythrocyte-like", 
+             "Dendritic cells", "Endothelial cells", "NK cells",
+             "Fibroblastic reticular cells")
+)
+
+median_celltype_area_filtered_with_ref <- ggplot(
+  median_celltype_filtered_df, 
+  aes(x = platform_version, y = area_median, fill = segmentation_clean)
+) +
+  geom_boxplot(outliers = F) +
+  geom_jitter(
+    position = position_jitterdodge(
+      jitter.width = 0.1,    # horizontal spread of dots
+      jitter.height = 0.1,
+      dodge.width = 0.75     # must match boxplot's dodge width (default is 0.75)
+    ),
+    size = 0.5
+  ) + 
+  scale_fill_manual(values = colour_panel) + 
+  geom_hline(data = ref_cell_area, 
+             aes(yintercept = low_bound),
+             linetype = "dashed", 
+             color = "brown") + 
+  geom_hline(data = ref_cell_area, 
+           aes(yintercept = up_bound),
+           linetype = "dashed", 
+           color = "brown") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)), n.breaks = 5) +  # y starts at 0
+  coord_cartesian(ylim = c(0, NA)) +
+  # facet_grid(rows = vars(platform_version), cols = vars(cell_type), scales = "fixed") + 
+  facet_wrap(~cell_type, nrow = 1) + 
+  labs(x = "Platform", y = expression("Median cell area ("*µm^2*")")) + 
+  theme_bw() +
+  theme(
+    legend.position = "none", 
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave("~/data/figures/median_celltype_area_filtered_with_ref.pdf", plot = median_celltype_area_filtered_with_ref, width = 20, height = 4)
+median_celltype_area_filtered_with_ref
+```
+
+Violin plot across samples
+
+```{r fig.width=25, fig.height=6}
+ggplot(
+    cell_df_filtered %>% filter(cell_area <= 500), 
+    aes(x = sample, y = cell_area, fill = segmentation_clean)
+  ) + 
+    geom_violin(trim = FALSE, scale = "width") + 
+    geom_boxplot(aes(group = interaction(sample, segmentation_clean)), 
+                 width = 0.15, outlier.shape = NA, fill = "white", color = "black",
+                 position = position_dodge(0.9)) +
+    scale_fill_manual(values = colour_panel) +
+    facet_grid(rows = vars(platform_version), cols = vars(cell_type), scales = "fixed") + 
+    labs(x = "Samples",
+         y = expression("Cell area ("*µm^2*")"),
+         fill = "segmentation_clean") + 
+    scale_y_continuous(n.breaks = 8) + 
+    theme_bw() + 
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none"
+    )
+```
+
+
+Selected cells: B cells, T cells, Macrophages, Neutrophils
+
+```{r}
+median_celltype_sub_df <- median_celltype_filtered_df %>% 
+  filter(cell_type %in% c("B cells", "T cells", "Macrophages", "Neutrophils"))
+ref_cell_area_sub <- ref_cell_area %>% 
+  filter(cell_type %in% c("B cells", "T cells", "Macrophages", "Neutrophils"))
+
+median_celltype_area_sub_ref <- ggplot(
+  median_celltype_sub_df, 
+  aes(x = segmentation_clean, y = area_median, fill = segmentation_clean)
+) +
+  geom_boxplot(outliers = F) +
+  geom_jitter(width = 0.1, height = 0.1) + 
+  scale_fill_manual(values = colour_panel) + 
+  geom_hline(data = ref_cell_area_sub, 
+             aes(yintercept = low_bound),
+             linetype = "dashed", 
+             color = "brown") + 
+  geom_hline(data = ref_cell_area_sub, 
+           aes(yintercept = up_bound),
+           linetype = "dashed", 
+           color = "brown") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)), n.breaks = 5) +  # y starts at 0
+  coord_cartesian(ylim = c(0, NA)) +
+  facet_grid(rows = vars(platform_version), cols = vars(cell_type), scales = "fixed") + 
+    # force y=0 lower bound, free upper bound
+  labs(x = "Segmentation", y = expression("Median cell area ("*µm^2*")")) + 
+  theme_bw() +
+  theme(legend.position = "none")
+
+median_celltype_area_sub_ref
+```
+
+
+Statistical testing on differences in cell area across segmentation
+
+```{r}
+library(broom)
+models_df <- median_celltype_filtered_df %>% 
+  group_by(platform_version, cell_type) %>% 
+  tidyr::nest() %>% 
+  mutate(model = map(data, ~aov(area_median ~ segmentation_clean, data = .x)))
+
+sig_celltypes_anova <- models_df %>% 
+  mutate(anova = map(model, ~ tidy(anova(.x)))) %>% 
+  unnest(anova) %>% 
+  filter(term == "segmentation_clean", p.value < 0.05) %>% 
+  select(platform_version, cell_type)
+
+sig_celltypes_anova_list <- sig_celltypes_anova %>% 
+  distinct() %>% 
+  group_by(platform_version) %>%
+  summarise(cell_types = list(cell_type), .groups = "drop") %>%
+  deframe()
+
+emm_results <- models_df %>%
+  mutate(
+    emm = map(model, ~ emmeans(.x, ~ segmentation_clean)),
+    tukey = map(emm, ~ pairs(.x, adjust = "tukey")),
+    tukey_sig = map(
+      tukey,
+      ~ {
+        s <- summary(.x)
+        s[s$p.value < 0.05, ]
+      }
+    )
+  )
+
+sig_contrast_df <- emm_results %>%
+  select(platform_version, cell_type, tukey_sig) %>% 
+  unnest(tukey_sig)
+
+sig_contrast_list <- sig_contrast_df %>%
+  group_by(platform_version, cell_type) %>%
+  summarise(contrasts = list(contrast), .groups = "drop") %>%
+  group_by(platform_version) %>%
+  summarise(cell_contrasts = list(setNames(contrasts, cell_type)), .groups = "drop") %>%
+  deframe() 
+
+sig_contrast_list
+```
+
+
+```{r fig.width=20, fig.height=4}
+median_celltype_counts_filtered_plot <- ggplot(
+  median_celltype_filtered_df, 
+  aes(x = platform_version, y = nCounts_median, fill = segmentation_clean)) +
+  geom_boxplot(outliers = F) +
+  geom_jitter(
+    position = position_jitterdodge(
+      jitter.width = 0.1, 
+      jitter.height = 0.1,
+      dodge.width = 0.75
+    ), 
+    size = 0.5
+  ) + 
+  scale_fill_manual(values = colour_panel) + 
+  facet_wrap(~cell_type, nrow = 1) + 
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +  # y starts at 0
+  coord_cartesian(ylim = c(0, NA)) +  # force y=0 lower bound, free upper bound
+  labs(
+    x = "Platform", 
+    y = "Median counts per cell (common genes)"
+  ) + 
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+ggsave("~/data/figures/median_celltype_counts_filtered_plot.pdf", plot = median_celltype_counts_filtered_plot, width = 20, height = 4)
+
+median_celltype_counts_filtered_plot
+```
+
+```{r fig.width=20, fig.height=4}
+median_celltype_features_filtered_plot <- ggplot(
+  median_celltype_filtered_df, 
+  aes(x = platform_version, y = nFeatures_median, fill = segmentation_clean)) +
+  geom_boxplot(outliers = F) +
+  geom_jitter(
+    position = position_jitterdodge(
+      jitter.width = 0.1, 
+      jitter.height = 0.1,
+      dodge.width = 0.75
+    ), 
+    size = 0.5
+  ) + 
+  scale_fill_manual(values = colour_panel) + 
+  facet_wrap(~cell_type, nrow = 1) + 
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)), n.breaks = 6) +  # y starts at 0
+  coord_cartesian(ylim = c(0, 91)) +
+  labs(
+    x = "Platform", 
+    y = "Median genes per cell (common genes)"
+  ) + 
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+ggsave("~/data/figures/median_celltype_features_filtered_plot.pdf", plot = median_celltype_features_filtered_plot, width = 20, height = 4)
+
+median_celltype_features_filtered_plot
+```
+
+
+#### Heatmap and statistical testing
+
+```{r}
+suppressPackageStartupMessages({
+  library(boot)
+  library(coin)
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+  library(combinat) # for combn()
+})
+
+# exact permutation test on log2 median ratio
+perm_test_median_ratio <- function(x, y, log2_scale = TRUE) {
+  n_x <- length(x)
+  n_y <- length(y)
+  pooled <- c(x, y)
+  n_pooled <- length(pooled)
+  
+  # observed statistic
+  obs_stat <- ifelse(log2_scale, log2(median(x) / median(y)), median(x) / median(y))
+  
+  # all ways to choose indices for x
+  perm_indices <- combinat::combn(n_pooled, n_x)   # n_x x C(n_pooled, n_x) matrix
+  
+  # compute statistic for every split
+  perm_stats <- apply(perm_indices, 2, function(idx) {
+    perm_x <- pooled[idx]
+    perm_y <- pooled[-idx]
+    log2(median(perm_x) / median(perm_y))
+  })
+  
+  # two-sided p-value: proportion of permuted stats as or more extreme
+  p_val <- mean(abs(perm_stats) >= abs(obs_stat))
+  
+  return(list(
+    obs_stat = obs_stat,
+    p_val = p_val
+  ))
+}
+
+# function to compute scaled effect, p-value, CI across platforms
+analyse_metric_celltype_across_platform <- function(subset_list, log2_scale = TRUE) {
+  # values per platform
+  xen_vals <- subset_list$xen_vals
+  mer_vals <- subset_list$mer_vals
+  
+  if (length(mer_vals) == 0 | length(xen_vals) == 0) {
+    return(list(scaled_effect = NA, p_val = NA))
+  }
+  
+  # perform permutation test on log2 median ratio between MERSCOPE and Xenium multimodal platforms
+  res <- perm_test_median_ratio(x = xen_vals, y = mer_vals, log2_scale = log2_scale)
+  
+  return(list(
+    metric = subset_list$metric,
+    col_label = subset_list$col_label,
+    scaled_effect = res$obs_stat,
+    p_val = res$p_val
+  ))
+}
+
+# function to compute scaled effect, p-value, CI across segmentation
+analyse_metric_celltype_across_seg <- function(subset_list, log2_scale = TRUE) {
+  # values per segmentation
+  default_vals <- subset_list$default_vals
+  proseg_vals <- subset_list$proseg_vals
+  cellpose_vals <- subset_list$cellpose_vals
+  
+  if (any(length(default_vals) == 0, length(proseg_vals) == 0, length(cellpose_vals)) == 0) {
+    return(list(scaled_effect = NA, p_val = NA))
+  }
+  
+  # perform permutation test on log2 median ratio between (Default, Cellpose2) and (Proseg, Cellpose2)
+  res_default <- perm_test_median_ratio(x = default_vals, y = cellpose_vals, log2_scale = log2_scale)
+  res_proseg <- perm_test_median_ratio(x = proseg_vals, y = cellpose_vals, log2_scale = log2_scale)
+  
+  return(list(
+    metric = subset_list$metric,
+    col_label = subset_list$col_label,
+    scaled_effect_default = res_default$obs_stat,
+    scaled_effect_proseg = res_proseg$obs_stat,
+    p_val_default = res_default$p_val,
+    p_val_proseg = res_proseg$p_val
+  ))
+}
+
+plot_area_heatmap_across_plat <- function(df, log2_scale = TRUE) {
+  # prepare plot data
+  plot_df <- df %>% 
+    group_by(platform_version, segmentation_clean, cell_type, sample) %>% 
+    summarise(
+      "Cell area" = median(cell_area),
+      "Number of transcripts" = median(common_gene_counts),
+      "Number of genes" = median(common_feature_counts),
+      .groups = "drop"
+    ) %>% 
+    ungroup()
+  
+  # list of platforms
+  platforms <- unique(plot_df$platform_version)
+  if (length(platforms) != 2) {
+    stop("This function assums exactly 2 platforms")
+  }
+  if (!all(platforms %in% c("MERSCOPE", "Xenium multimodal"))) {
+    stop("The platforms must be MERSCOPE and Xenium multimodal")
+  }
+  
+  # define the column order of heatmap
+  cell_types <- levels(plot_df$cell_type)
+  segmentations <- c("Default", "Proseg", "Cellpose2")
+  col_order <- data.frame(
+    cell_type = rep(cell_types, each = length(segmentations)),
+    segmentation = rep(segmentations, times = length(cell_types))
+  ) %>% 
+    mutate(col_label = paste(cell_type, segmentation, sep = "|"))
+  
+  # pre-split data for each metric and cell type
+  # nested list: split_df[[metric & cell type]]
+  metrics <- c("Cell area", "Number of transcripts", "Number of genes")
+  split_df <- plot_df %>% 
+    pivot_longer(cols = metrics, names_to = "metric", values_to = "value") %>% 
+    group_by(segmentation_clean, metric, cell_type) %>% 
+    group_split() %>% 
+    lapply(function(df) {
+      list(
+        metric = unique(df$metric),
+        col_label = paste(unique(df$cell_type), unique(df$segmentation_clean), sep = "|"),
+        mer_vals = df %>% filter(platform_version == "MERSCOPE") %>% pull(value),
+        xen_vals = df %>% filter(platform_version == "Xenium multimodal") %>% pull(value)
+      )
+    })
+  
+  # apply permutation test to all subsets
+  res_list <- lapply(split_df, function(df) analyse_metric_celltype_across_platform(df, log2_scale = log2_scale))
+  
+  # Add results to matrices for heatmap
+  heatmap_values <- matrix(
+    NA, nrow = length(metrics), ncol = length(col_order$col_label), 
+    dimnames = list(metrics, col_order$col_label)
+  )
+  pvals <- matrix(
+    NA, nrow = length(metrics), ncol = length(col_order$col_label), 
+    dimnames = list(metrics, col_order$col_label)
+  )
+  for (res in res_list) {
+    r <- res$metric
+    c <- res$col_label
+    heatmap_values[r, c] <- res$scaled_effect
+    pvals[r, c] <- res$p_val
+  }
+  
+  # multiple testing correction (BH)
+  pvals_adj <- pvals
+  # metric-wise adjustment
+  for (i in seq_len(nrow(pvals))) {
+    for (seg in segmentations) {
+      col <- grepl(seg, colnames(pvals_adj))
+      pvals_adj[i, col] <- p.adjust(pvals[i, col], method = "BH")
+    }
+  }
+  
+  # mark significance
+  sig_mat <- ifelse(pvals_adj < 0.05, TRUE, FALSE)
+  
+  segmentation_colours <- c(
+    "Default" = "#F8766D",
+    "Proseg" = "#00BA38",
+    "Cellpose2" = "#619CFF"
+  )
+  
+  # set annotation for segmentation colour bar
+  seg_bar <- HeatmapAnnotation(
+    Segmentation = col_order$segmentation,
+    col = list(Segmentation = segmentation_colours),
+    show_annotation_name = TRUE,
+    annotation_name_side = "right",
+    annotation_name_gp = gpar(fontsize = 10),
+    simple_anno_size = unit(5, "mm"),
+    annotation_legend_param = list(
+      Segmentation = list(
+        title = "Segmentation",
+        at = segmentations,
+        labels = segmentations,
+        nrow = 1,
+        legend_gp = gpar(fill = segmentation_colours)
+      )
+    )
+  )
+
+  col_fun <- colorRamp2(
+    c(0, 4, 8),
+    c("white", "#FDD18E", "#FDA203")
+  )
+  
+  # column split by cell pair
+  col_split <- factor(col_order$cell_type, levels = cell_types)
+  
+  # draw heatmap
+  ht <- Heatmap(
+    heatmap_values,
+    name = "Log2 median ratio",
+    col = col_fun,
+    
+    # column settings
+    column_split = col_split,
+    column_gap = unit(1.5, "mm"),
+    column_title_gp   = gpar(fontsize = 10),
+    column_title_side = "top",            # segmentation labels at top
+    show_column_names = FALSE,            # hide individual segmentation names
+    column_title_rot = 45,
+    cluster_columns   = FALSE,
+    cluster_column_slices = FALSE,
+    
+    # row settings
+    cluster_rows      = FALSE,
+    row_names_side    = "right",
+    row_names_gp      = gpar(fontsize = 10),
+    
+    # cell size
+    width = unit(ncol(heatmap_values) * 5, "mm"),
+    height = unit(nrow(heatmap_values) * 5, "mm"),
+    
+    # top annotation (segmentation bar below cell pair title)
+    top_annotation = seg_bar,
+    
+    # significance stars
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      if (sig_mat[i, j]) {
+        grid.text("*", x, y, gp = gpar(fontsize = 10, col = "black"))
+      }
+    },
+    
+    # borders
+    border            = TRUE,
+    rect_gp           = gpar(col = "white", lwd = 0.5),
+    
+    # legend
+    heatmap_legend_param = list(
+      col_fun = col_fun,
+      title = "Median ratio",
+      at = seq(0, 8, length.out = 5),
+      direction = "horizontal",
+      title_position = "topcenter",
+      legend_width  = unit(5, "cm"),
+      labels_gp     = gpar(fontsize = 9)
+    )
+  ) 
+  
+  draw(ht,
+       heatmap_legend_side    = "bottom",
+       annotation_legend_side = "bottom",
+       merge_legend           = TRUE)
+}
+
+
+plot_area_heatmap_across_seg <- function(df, log2_scale = TRUE) {
+  # prepare plot data
+  plot_df <- df %>% 
+    group_by(platform_version, segmentation_clean, cell_type, sample) %>% 
+    summarise(
+      "Cell area" = median(cell_area),
+      "Number of transcripts" = median(common_gene_counts),
+      "Number of genes" = median(common_feature_counts),
+      .groups = "drop"
+    ) %>% 
+    ungroup()
+  
+  # list of segmentation
+  segmentations <- levels(plot_df$segmentation_clean)
+  if (length(segmentations) != 3) {
+    stop("This function assumes exactly 3 segmentation methods")
+  }
+  if (!all(segmentations %in% c("Default", "Proseg", "Cellpose2"))) {
+    stop("The segmentation methods must be Default, Proseg and Cellpose2")
+  }
+  
+  # define the column order of heatmap
+  platforms <- unique(plot_df$platform_version)
+  cell_types <- levels(plot_df$cell_type)
+  col_order <- data.frame(
+    cell_type = rep(cell_types, each = length(platforms)),
+    platform = rep(platforms, times = length(cell_types))
+  ) %>% 
+    mutate(col_label = paste(cell_type, platform, sep = "|"))
+  
+  # pre-split data for each metric and cell type
+  # nested list: split_df[[metric & cell type]]
+  metrics <- c("Cell area", "Number of transcripts", "Number of genes")
+  split_df <- plot_df %>% 
+    pivot_longer(cols = metrics, names_to = "metric", values_to = "value") %>% 
+    group_by(platform_version, metric, cell_type) %>% 
+    group_split() %>% 
+    lapply(function(df) {
+      list(
+        metric = unique(df$metric),
+        col_label = paste(unique(df$cell_type), unique(df$platform_version), sep = "|"),
+        default_vals = df %>% filter(segmentation_clean == "Default") %>% pull(value),
+        proseg_vals = df %>% filter(segmentation_clean == "Proseg") %>% pull(value),
+        cellpose_vals = df %>% filter(segmentation_clean == "Cellpose2") %>% pull(value)
+      )
+    })
+  
+  # apply permutation test to all subsets
+  res_list <- lapply(split_df, function(df) analyse_metric_celltype_across_seg(df, log2_scale = log2_scale))
+  
+  # Add results to matrices for heatmap
+  row_label <- paste(rep(metrics, each = 2), rep(c("Default", "Proseg"), times = 2), sep = "|")
+  heatmap_values <- matrix(
+    NA, nrow = length(row_label), ncol = length(col_order$col_label), 
+    dimnames = list(row_label, col_order$col_label)
+  )
+  pvals <- matrix(
+    NA, nrow = length(row_label), ncol = length(col_order$col_label), 
+    dimnames = list(row_label, col_order$col_label)
+  )
+  for (res in res_list) {
+    r1 <- paste(res$metric, "Default", sep = "|")
+    r2 <- paste(res$metric, "Proseg", sep = "|")
+    c <- res$col_label
+    heatmap_values[r1, c] <- res$scaled_effect_default
+    heatmap_values[r2, c] <- res$scaled_effect_proseg
+    pvals[r1, c] <- res$p_val_default
+    pvals[r2, c] <- res$p_val_proseg
+  }
+  
+  # multiple testing correction (BH)
+  pvals_adj <- pvals
+  # metric-wise adjustment
+  for (i in seq_len(nrow(pvals))) {
+    for (platform in platforms) {
+      col <- grepl(platform, colnames(pvals_adj))
+      pvals_adj[i, col] <- p.adjust(pvals[i, col], method = "BH")
+    }
+  }
+  
+  # mark significance
+  sig_mat <- ifelse(pvals_adj < 0.05, TRUE, FALSE)
+  
+  # colour scale
+  col_fun <- colorRamp2(
+    c(-1, 0, 4),
+    c("#2166AC", "white", "#FDA203")   
+  )
+  
+  # row split by comparison
+  row_split <- factor(
+    rep(metrics, each = 2),
+    levels = metrics
+  )
+  
+  # row annotation (coloured by comparison)
+  # each group of 2 rows, row1 = Default vs Cellpose2, row2 = Proseg vs Cellpose2
+  comparison_colours <- rep(c("#F8766D", "#00BA38"), length(metrics))
+  row_anno <- rowAnnotation(
+    Comparison = anno_simple(
+      comparison_colours,
+      col = c("#F8766D" = "#F8766D", "#00BA38" = "#00BA38"),
+      width = unit(5, "mm")
+    ),
+    show_annotation_name = FALSE
+  )
+  
+  # column split by cell types
+  col_split <- factor(col_order$cell_type, levels = cell_types)
+  
+  # column annotation (coloured by platform)
+  # each cell type has 2 sub-columns (one per platform)
+  platform_colours <- rep(c("#764698", "#363a64"), length(cell_types))
+  top_anno <- HeatmapAnnotation(
+    Platform = anno_simple(
+      platform_colours,
+      col = c("#764698" = "#764698", "#363a64" = "#363a64"),
+      height = unit(5, "mm")
+    ),
+    show_annotation_name = FALSE
+  )
+  
+  # cell function: draw star if significant
+  cell_fun <- function(j, i, x, y, width, height, fill) {
+    if (sig_mat[i, j]) {
+      grid.text("*", x, y, gp = gpar(fontsize = 8, col = "black"))
+    }
+  }
+  
+  # draw heatmap
+  ht <- Heatmap(
+    heatmap_values,
+    name = "Log2 median ratio",
+    col  = col_fun,
+    
+    # column settings
+    cluster_columns   = FALSE,
+    column_split      = col_split,
+    column_gap        = unit(1.5, "mm"),
+    column_title_gp   = gpar(fontsize = 10),
+    column_title_side = "top",
+    column_title_rot  = 45,
+    show_column_names = FALSE,
+    
+    # row settings
+    cluster_rows      = FALSE,
+    show_row_names    = FALSE,          # hide pipe-separated row labels
+    row_split         = row_split,
+    row_title_side    = "right",        # metric names appear on the right
+    row_title_rot     = 0,
+    row_title_gp      = gpar(fontsize = 10),
+    row_gap           = unit(2, "mm"),
+    
+    # cell size
+    width  = unit(ncol(heatmap_values) * 5, "mm"),
+    height = unit(nrow(heatmap_values) * 5, "mm"),
+    
+    # annotations
+    top_annotation   = top_anno,
+    right_annotation = row_anno,
+    
+    # significance stars
+    cell_fun = cell_fun,
+    
+    # borders
+    border  = TRUE,
+    rect_gp = gpar(col = "white", lwd = 0.5),
+    
+    # legend
+    heatmap_legend_param = list(
+      title          = "Median ratio",
+      at             = c(-1, 0, 1, 2, 3, 4),
+      direction      = "horizontal",
+      title_position = "topcenter",
+      legend_width   = unit(5, "cm"),
+      labels_gp      = gpar(fontsize = 9)
+    )
+  )
+  
+  # Platform legend
+  lgd_platform <- Legend(
+    title      = "Platform",
+    labels     = c("MERSCOPE", "Xenium mutimodal"),
+    legend_gp  = gpar(fill = c("#764698", "#363a64")),
+    title_gp   = gpar(fontsize = 10, fontface = "bold"),
+    labels_gp  = gpar(fontsize = 9),
+    direction  = "horizontal",
+    nrow       = 1
+  )
+  
+  # Segmentation comparison legend
+  lgd_comparison <- Legend(
+    title      = "Segmentation comparison",
+    labels     = c("Default vs Cellpose2", "Proseg vs Cellpose2"),
+    legend_gp  = gpar(fill = c("#F8766D", "#00BA38")),
+    title_gp   = gpar(fontsize = 10, fontface = "bold"),
+    labels_gp  = gpar(fontsize = 9),
+    direction  = "horizontal",
+    nrow       = 1
+  )
+  
+  # Pack legends side by side at the bottom
+  pd <- packLegend(
+    lgd_platform,
+    lgd_comparison,
+    direction = "horizontal",
+    gap       = unit(1, "cm")
+  )
+  
+  grid.grabExpr({
+    draw(ht, heatmap_legend_side = "bottom", 
+             annotation_legend_side = "bottom", 
+             merge_legend = TRUE)
+    draw(pd, x = unit(0.5, "npc"), y = unit(0.02, "npc"), 
+             just = c("center", "bottom"))
+  })
+}
+```
+
+Cross-platform comparison
+
+```{r fig.width=8, fig.height=4}
+cell_df_filtered$cell_type <- factor(
+  cell_df_filtered$cell_type,
+  levels = c("B cells", "T cells", "GC B cells", "Plasma cells",
+             "Macrophages", "Neutrophils", "Erythrocyte-like", 
+             "Dendritic cells", "Endothelial cells", "NK cells",
+             "Fibroblastic reticular cells")
+)
+area_heatmap_plat <- plot_area_heatmap_across_plat(cell_df_filtered, log2_scale = FALSE)
+
+pdf("~/data/figures/area_heatmap_across_plat.pdf", width = 8, height = 4)
+ComplexHeatmap::draw(area_heatmap_plat)
+dev.off()
+```
+
+Cross-segmentation comparison
+
+```{r fig.width=8, fig.height=5}
+area_heatmap_seg <- plot_area_heatmap_across_seg(cell_df_filtered, log2_scale = FALSE)
+grid.newpage()
+grid.draw(area_heatmap_seg)
+
+pdf("~/data/figures/area_heatmap_across_seg.pdf", width = 8, height = 5)
+grid.newpage()
+grid.draw(area_heatmap_seg)
+dev.off()
+```
+
+
+#### All-in-one
+
+```{r fig.width=15, fig.height=4}
+layout <- "
+AAAAABB
+"
+
+cell_area_summary_filtered <- wrap_plots(list(
+  cell_area_filtered,
+  median_cell_area_filtered
+)) + 
+  plot_layout(design = layout)
+ggsave("~/data/figures/cell_area_summary_filtered.pdf", plot = cell_area_summary_filtered, width = 15, height = 4)
+
+cell_area_summary_filtered
+```
+
+### Aspect ratio
+
+# Correlations between metrics of interest
+
+## Transcript counts vs cell area
+
+# Dimensional reduction plot
+
+Colour panel
+
+```{r}
+cols <- c("T cells" = "yellowgreen", 
+          "Erythrocyte-like" = "violet", 
+          "Neutrophils" = "mediumblue", 
+          "B cells" = "tomato", 
+          "Plasma cells" = "thistle1", 
+          "GC B cells" = "yellow", 
+          "Macrophages" = "skyblue2",
+          "Endothelial cells" = "orange",
+          "Muscle cells" = "deeppink",
+          "Unknown" = "grey",
+          "Dendritic cells" = "darkgreen",
+          "NK cells" = "dodgerblue3",
+          "Fibroblastic reticular cells" = "tan3")
+```
+
+## MERSCOPE
+
+UMAP plots on different segmentation methods
+
+```{r fig.width=12, fig.height=4}
+merscope_dim_plots <- combine_DimPlot(
+  list(merscope_vizgen, merscope_proseg, merscope_cellpose),
+  cols = cols
+)
+ggsave("~/data/figures/merscope_dim_plots.pdf", plot = merscope_dim_plots, width = 12, height = 4)
+merscope_dim_plots
+```
+
+## Xenium
+
+Unimodal
+
+```{r fig.width=9, fig.height=4}
+xenium_uni_dim_plots <- combine_DimPlot(
+  list(xenium_uni_default, xenium_uni_proseg),
+  cols = cols
+)
+ggsave("~/data/figures/xenium_uni_dim_plots.pdf", plot = xenium_uni_dim_plots, width = 9, height = 4)
+xenium_uni_dim_plots
+```
+
+Multimodal
+
+```{r fig.width=12, fig.height=4}
+xenium_multi_dim_plots <- combine_DimPlot(
+  list(xenium_multi_default, xenium_multi_proseg, xenium_multi_cellpose),
+  cols = cols
+)
+ggsave("~/data/figures/xenium_multi_dim_plots.pdf", plot = xenium_multi_dim_plots, width = 12, height = 4)
+xenium_multi_dim_plots
+```
+
+# Image dimensional plot
+
+## WT710
+
+### Original scale with zoom-in outline
+
+MERSCOPE
+
+```{r fig.width=12, fig.height=4}
+rect_bounds <- list(ymin=600, ymax=1400, xmin=5300, xmax=6100)
+
+merscope_wt710_imagedimplt <- combine_ImageDimPlot(
+  list(merscope_vizgen, merscope_proseg, merscope_cellpose),
+  fov = "wt710",
+  cols = cols,
+  rect_bounds = rect_bounds
+)
+ggsave("~/data/figures/merscope_wt710_imagedimplt.pdf", plot = merscope_wt710_imagedimplt, width = 12, height = 4)
+merscope_wt710_imagedimplt
+```
+
+Xenium unimodal
+
+```{r fig.width=9, fig.height=4}
+rect_bounds <- list(xmin = 2650, xmax = 3450, ymin = 1000, ymax = 1800)
+
+xenium_uni_ko167_imagedimplt <- combine_ImageDimPlot(
+  list(xenium_uni_default, xenium_uni_proseg),
+  fov = "ko167",
+  cols = cols,
+  rect_bounds = rect_bounds
+)
+ggsave("~/data/figures/xenium_uni_ko167_imagedimplt.pdf", plot = xenium_uni_ko167_imagedimplt, width = 9, height = 4)
+xenium_uni_ko167_imagedimplt
+```
+
+Xenium multimodal
+
+```{r fig.width=9, fig.height=4}
+rect_bounds <- list(xmin = 2150, xmax = 2950, ymin = 2350, ymax = 3150)
+
+xenium_multi_wt710_imagedimplt <- combine_ImageDimPlot(
+  list(xenium_multi_default, xenium_multi_proseg, xenium_multi_cellpose),
+  fov = "wt710",
+  cols = cols,
+  rect_bounds = rect_bounds
+)
+ggsave("~/data/figures/xenium_multi_wt710_imagedimplt.pdf", plot = xenium_multi_wt710_imagedimplt, width = 12, height = 4)
+xenium_multi_wt710_imagedimplt
+```
+
+### ROI 1: Zoom-in crop with further zoom-in outline
+
+MERSCOPE
+
+```{r fig.width=12, fig.height=4}
+crop_bounds <- list(ymin=600, ymax=1400, xmin=5300, xmax=6100)
+rect_bounds <- list(xmin = 5400, xmax = 5700, ymin = 650, ymax = 950)
+
+merscope_wt710_imagedimplt_roi1 <- combine_ImageDimPlot(
+  list(merscope_vizgen, merscope_proseg, merscope_cellpose),
+  fov = "wt710",
+  cols = cols,
+  rect_bounds = rect_bounds,
+  crop_bounds = crop_bounds,
+  boundaries = "segmentation"
+)
+ggsave("~/data/figures/merscope_wt710_imagedimplt_roi1.pdf", plot = merscope_wt710_imagedimplt_roi1, width = 12, height = 4)
+merscope_wt710_imagedimplt_roi1
+```
+
+Xenium unimodal
+
+```{r fig.width=9, fig.height=4}
+crop_bounds <- list(xmin = 2650, xmax = 3450, ymin = 1000, ymax = 1800)
+rect_bounds <- list(xmin = 2750, xmax = 3050, ymin = 1050, ymax = 1350)
+
+xenium_uni_ko167_dimplt_roi1 <- combine_ImageDimPlot(
+  list(xenium_uni_default, xenium_uni_proseg),
+  fov = "ko167",
+  cols = cols,
+  crop_bounds = crop_bounds,
+  rect_bounds = rect_bounds,
+  boundaries = "segmentation"
+)
+ggsave("~/data/figures/xenium_uni_ko167_dimplt_roi1.pdf", plot = xenium_uni_ko167_dimplt_roi1, width = 9, height = 4)
+xenium_uni_ko167_dimplt_roi1
+```
+
+Xenium multimodal
+
+```{r fig.width=12, fig.height=4}
+crop_bounds <- list(xmin = 2150, xmax = 2950, ymin = 2350, ymax = 3150)
+rect_bounds <- list(xmin = 2250, xmax = 2550, ymin = 2400, ymax = 2700)
+
+xenium_multi_wt710_dimplt_roi1 <- combine_ImageDimPlot(
+  list(xenium_multi_default, xenium_multi_proseg, xenium_multi_cellpose),
+  fov = "wt710",
+  cols = cols,
+  rect_bounds = rect_bounds,
+  crop_bounds = crop_bounds,
+  boundaries = "segmentation"
+)
+ggsave("~/data/figures/xenium_multi_wt710_dimplt_roi1.pdf", plot = xenium_multi_wt710_dimplt_roi1, width = 12, height = 4)
+xenium_multi_wt710_dimplt_roi1
+```
+
+### ROI 2: Further zoom-in crop for visualisation of cell polygons
+
+MERSCOPE
+
+```{r fig.width=12, fig.height=4}
+crop_bounds <- list(xmin = 5400, xmax = 5700, ymin = 650, ymax = 950)
+
+merscope_wt710_imagedimplt_roi2 <- combine_ImageDimPlot(
+  list(merscope_vizgen, merscope_proseg, merscope_cellpose),
+  fov = "wt710",
+  cols = cols,
+  crop_bounds = crop_bounds,
+  boundaries = "segmentation"
+)
+ggsave("~/data/figures/merscope_wt710_imagedimplt_roi2.pdf", plot = merscope_wt710_imagedimplt_roi2, width = 12, height = 4)
+merscope_wt710_imagedimplt_roi2
+```
+
+Xenium unimodal
+
+```{r fig.width=9, fig.height=4}
+crop_bounds <- list(xmin = 2750, xmax = 3050, ymin = 1050, ymax = 1350)
+
+xenium_uni_ko167_imagedimplt_roi2 <- combine_ImageDimPlot(
+  list(xenium_uni_default, xenium_uni_proseg),
+  fov = "ko167",
+  cols = cols,
+  crop_bounds = crop_bounds,
+  boundaries = "segmentation"
+)
+ggsave("~/data/figures/xenium_uni_ko167_imagedimplt_roi2.pdf", plot = xenium_uni_ko167_imagedimplt_roi2, width = 9, height = 4)
+xenium_uni_ko167_imagedimplt_roi2
+```
+
+Xenium multimodal
+
+```{r fig.width=12, fig.height=4}
+crop_bounds <- list(xmin = 2250, xmax = 2550, ymin = 2400, ymax = 2700)
+
+xenium_multi_wt710_imagedimplt_roi2 <- combine_ImageDimPlot(
+  list(xenium_multi_default, xenium_multi_proseg, xenium_multi_cellpose),
+  fov = "wt710",
+  cols = cols,
+  crop_bounds = crop_bounds,
+  boundaries = "segmentation"
+)
+ggsave("~/data/figures/xenium_multi_wt710_imagedimplt_roi2.pdf", plot = xenium_multi_wt710_imagedimplt_roi2, width = 12, height = 4)
+xenium_multi_wt710_imagedimplt_roi2
+```
+
+# Cell type composition
+
+```{r}
+celltype_prop <- cell_df %>%
+  # filter(platform_version != "Xenium multimodal") %>% 
+  dplyr::count(platform_version, segmentation_clean, sample, cell_type) %>%   # gives column `n` = count per cell_type
+  group_by(platform_version, segmentation_clean, sample) %>%
+  mutate(prop = n / sum(n), # sum(n) now sums across cell_type within segmentation + sample
+         group = case_when(
+           grepl("ctrl", sample) ~ "ctrl",
+           grepl("ko", sample) ~ "ko",
+           grepl("wt", sample) ~ "wt",
+           TRUE ~ "other"
+         )) %>% 
+  ungroup()
+
+celltype_prop$sample_id <- gsub("^[A-Za-z]+", "", celltype_prop$sample)
+celltype_prop$sample_id <- factor(celltype_prop$sample_id)
+celltype_prop$segmentation_clean <- factor(
+  celltype_prop$segmentation_clean,
+  levels = c("Default", "Proseg", "Cellpose2")
+)
+celltype_prop$platform_version <- factor(
+  celltype_prop$platform_version,
+  levels = c("MERSCOPE", "Xenium unimodal", "Xenium multimodal"))
+
+# check if cell proportions of the same sample sum up to 1
+celltype_prop %>% 
+  group_by(platform_version, segmentation_clean, sample) %>% 
+  summarise(sum = sum(prop), .groups = "drop")
+```
+
+## Bar chart
+
+```{r fig.width=10, fig.height=8}
+celltype_composition <- ggplot(
+  celltype_prop, 
+  aes(x = segmentation_clean, y = prop, fill = cell_type)
+) +
+  geom_col() + 
+  scale_fill_manual(values = cols) + 
+  facet_grid(rows = vars(platform_version), cols = vars(sample_id)) + 
+  labs(x = "Segmentation",
+       y = "Cell proprotion",
+       fill = "Cell type") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("~/data/figures/celltype_composition.pdf", plot = celltype_composition, width = 10, height = 8, dpi = 300)
+celltype_composition
+```
+
+```{r fig.width=10, fig.height=8}
+celltype_composition_by_platform <- ggplot(
+  celltype_prop, 
+  aes(x = platform_version, y = prop, fill = cell_type)
+) +
+  geom_col() + 
+  scale_fill_manual(values = cols) + 
+  facet_grid(rows = vars(segmentation_clean), cols = vars(sample_id)) + 
+  labs(x = "Segmentation",
+       y = "Cell proprotion",
+       fill = "Cell type") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("~/data/figures/celltype_composition_by_platform.pdf", plot = celltype_composition_by_platform, width = 10, height = 8, dpi = 300)
+celltype_composition_by_platform
+```
+
+## Box plot
+
+```{r fig.width=6, fig.height=12}
+ggplot(
+  celltype_prop,
+  aes(x = segmentation_clean, y = prop, fill = group)
+) +
+  # Bar at median
+  stat_summary(
+    fun = median,
+    geom = "bar",
+    position = position_dodge(width = 0.8),
+    width = 0.8,
+    alpha = 0.7
+  ) +
+  # Error bars (Q1–Q3 IQR)
+  stat_summary(
+    fun.min = function(x) quantile(x, 0.25),
+    fun.max = function(x) quantile(x, 0.75),
+    geom = "errorbar",
+    position = position_dodge(width = 0.8),
+    width = 0.3,
+    linewidth = 0.5,
+    color = "black"
+  ) +
+  # Individual data dots
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    size = 1.5,
+    alpha = 0.6,
+    color = "black"
+  ) +
+  # Median crossbar line on top
+  stat_summary(
+    fun = median,
+    geom = "crossbar",
+    position = position_dodge(width = 0.8),
+    width = 0.8,
+    linewidth = 0.5,
+    color = "black"
+  ) +
+  facet_grid(cols = vars(platform_version), rows = vars(cell_type)) +
+  theme_bw()
+```
+
+```{r fig.width=14, fig.height=6}
+celltype_prop_bar_plot <- ggplot(
+  celltype_prop %>% 
+    mutate(
+      platform_version = factor(
+        platform_version, 
+        levels = c("MERSCOPE", "Xenium multimodal", "Xenium unimodal")
+      ),
+      group = case_when(
+        grepl("ctrl", group) ~ "CTRL",
+        grepl("ko", group) ~ "KO",
+        grepl("wt", group) ~ "WT"
+      )
+    ),
+  aes(x = prop, y = segmentation_clean, fill = group)
+) +
+  # Bar at median
+  stat_summary(
+    fun = median,
+    geom = "bar",
+    position = position_dodge(width = 0.8),
+    width = 0.8,
+    alpha = 0.8
+  ) +
+  # Error bars (Q1–Q3 IQR)
+  stat_summary(
+    fun.min = function(x) quantile(x, 0.25),
+    fun.max = function(x) quantile(x, 0.75),
+    geom = "errorbar",
+    position = position_dodge(width = 0.8),
+    width = 0.3,
+    linewidth = 0.5,
+    color = "black"
+  ) +
+  # Individual data dots
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    size = 1.5,
+    alpha = 0.6,
+    color = "black"
+  ) +
+  # Median crossbar line on top
+  stat_summary(
+    fun = median,
+    geom = "crossbar",
+    position = position_dodge(width = 0.8),
+    width = 0.8,
+    linewidth = 0.5,
+    color = "black"
+  ) +
+  scale_fill_manual(values = c("CTRL" = "#9B72B5", "KO" = "#D4A017", "WT" = "#3AAFA9")) +
+  facet_grid(rows = vars(platform_version), cols = vars(cell_type), labeller = label_wrap_gen(width = 20)) +
+  labs(x = "Cell proportion", y = "Segmentation", fill = "Group") + 
+  theme_bw()
+ggsave("~/data/figures/celltype_prop_bar_plot.pdf", width = 14, height = 6)
+celltype_prop_bar_plot
+```
+
+
+
+```{r}
+ggplot(
+  celltype_prop %>% filter(platform_version == "Xenium unimodal"),
+  aes(x = prop, y = cell_type, fill = group)
+) +
+  # Bar at median
+  stat_summary(
+    fun = median,
+    geom = "bar",
+    position = position_dodge(width = 0.8),
+    width = 0.8,
+    alpha = 0.7
+  ) +
+  # Individual data dots
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8),
+    size = 1.5,
+    alpha = 0.6,
+    color = "black"
+  ) +
+  # Median crossbar line on top
+  stat_summary(
+    fun = median,
+    geom = "crossbar",
+    position = position_dodge(width = 0.8),
+    width = 0.8,
+    linewidth = 0.5,
+    color = "black"
+  ) +
+  facet_wrap(~segmentation_clean) +
+  theme_bw()
+```
+
+
+
+## Differential abundance testing with Propeller
+
+```{r}
+suppressPackageStartupMessages({
+  library(speckle)
+  library(scater)
+  library(limma)
+  library(edgeR)
+  library(statmod)
+  library(xtable)
+})
+```
+
+```{r}
+# prepare data for speckle based on segmentation method
+convertPropList <- function(celltype_prop, platform_ver, seg) {
+  segmentation_prop <- celltype_prop %>% 
+    # only keep the current segmentation proportions and drop unwanted control group
+    filter(
+      platform_version == platform_ver,
+      segmentation_clean == seg,
+      group != "ctrl"
+    ) %>% 
+    select(-platform_version, -segmentation_clean)
+
+  # make proportion data.frame with cell types as rows, samples as columns and proportions as values
+  prop_wide <- segmentation_prop %>% 
+    select(cell_type, sample, prop) %>% 
+    pivot_wider(names_from = sample, values_from = prop) %>% 
+    as.data.frame()
+  rownames(prop_wide) <- prop_wide$cell_type
+  prop_wide$cell_type <- NULL
+  
+  # make sample_info data.frame with groups and sample id as columns
+  sample_info <- segmentation_prop %>% 
+    select(group, sample_id) %>% 
+    distinct() %>% # remove duplication
+    as.data.frame()
+  
+  # make total_cells vector as a named vector of total cell counts by samples
+  total_cells <- segmentation_prop %>% 
+    group_by(sample) %>% 
+    summarise(total_cells = sum(n)) %>% 
+    tibble::deframe()
+  
+  # combine 
+  prop_list <- list(
+    proportions = prop_wide,
+    sample_info = sample_info,
+    total_cells = total_cells,
+    segmentation = seg,
+    platform_version = platform_ver
+  )
+  
+  return(prop_list)
+}
+
+# test differential cell abundance across tissue types
+prop_test <- function(prop_list) {
+  prop <- prop_list$proportions
+  sample_info <- prop_list$sample_info
+  total_cells <- prop_list$total_cells
+  
+  # take logit transformation on cell proportions due to small sample size of 6
+  logit_prop_list <- convertDataToList(
+  prop, 
+  data.type = "proportions", 
+  transform = "logit", 
+  scale.fac = total_cells
+)
+  
+  # test WT vs KO
+  designAS <- model.matrix(~0 + sample_info$group)
+  colnames(designAS) <- c("KO","WT")
+  
+  mycontr <- makeContrasts(KO-WT, levels = designAS)
+  # use t test due to two groups otherwise ANOVA
+  results <- propeller.ttest(prop.list = logit_prop_list, design = designAS, 
+                             contrasts = mycontr, robust = TRUE, 
+                             trend = FALSE, sort = TRUE)
+  
+  # restuls <- results %>% 
+  #   as.data.frame() %>% 
+  #   tibble::rownames_to_column("cell_type") %>% 
+  #   mutate(
+  #     segmentation = prop_list$segmentation,
+  #     platform_version = prop_list$platform_version
+  #   )
+  return(results)
+}
+
+plotTestResult <- function(prop_list, platform_version, segmentation, celltypes = c("B cells", "GC B cells")) {
+  
+  par(mfrow = c(1, length(celltypes)))
+  
+  for (ct in celltypes) {
+    stripchart(
+      as.numeric(prop_list$proportions[ct, ]) ~ prop_list$sample_info$group,
+      vertical = TRUE,
+      pch = c(8, 16),
+      method = "jitter",
+      col = c("hotpink", "darkblue"),
+      cex = 2,
+      ylab = "Proportions",
+      group.names = c("KO", "WT"),
+      main = paste(
+        ct,
+        segmentation,
+        platform_version,
+        sep = " | "
+      )
+    )
+  }
+}
+```
+
+```{r}
+plat_levels <- c("MERSCOPE", "Xenium unimodal")
+seg_levels <- levels(celltype_prop$segmentation_clean)
+
+valid_combo <- celltype_prop %>% 
+  filter(platform_version != "Xenium multimodal") %>% 
+  distinct(platform_version, segmentation_clean)
+
+prop_res <- valid_combo %>%
+  mutate(
+    prop_list = pmap(
+      list(platform_version, segmentation_clean),
+      function(platform_version, segmentation_clean) {
+        convertPropList(
+          celltype_prop,
+          platform_ver = platform_version,
+          seg = segmentation_clean
+        )
+      }
+    ),
+    prop_test = map(
+      prop_list,
+      ~ if (is.null(.x)) NULL else prop_test(.x)
+    )
+  )
+```
+
+```{r}
+purrr::pwalk(
+  list(
+    prop_list          = prop_res$prop_list,
+    platform_version   = prop_res$platform_version,
+    segmentation_clean = prop_res$segmentation_clean
+  ),
+  function(prop_list, platform_version, segmentation_clean) {
+    plotTestResult(
+      prop_list          = prop_list,
+      platform_version   = platform_version,
+      segmentation = segmentation_clean
+    )
+  }
+)
+
+```
+
+Cell types with significant differential abundance
+
+```{r}
+signif_prop_res <- prop_res %>%
+  # unnest the prop_test list-column
+  mutate(prop_df = map(prop_test, ~ as.data.frame(.x) %>% 
+                       tibble::rownames_to_column(var = "Cell type"))) %>%
+  select(platform_version, segmentation_clean, prop_df) %>%
+  unnest(prop_df) %>%
+  filter(FDR < 0.05) %>%  
+  # add Segmentation column for clarity
+  dplyr::rename(`Platform version` = platform_version, Segmentation = segmentation_clean)
+signif_prop_res
+```
+
+```{r}
+print(
+  xtable(
+    signif_prop_res,
+    display = c("s", "s", "s", "s", rep("f", 4), "E", "E"),
+    digits = c(0, 0, 0, 0, rep(4, 4), -3, -3),
+    caption = "Significant differential cell proportions between WT and KO samples using Propeller",
+    label = "tab:signif_differential_proportion"
+  ),
+  type = "latex",
+  file = "~/data/signif_differential_prop.tex",
+  include.rownames = FALSE,
+  booktabs = TRUE
+)
+```
+
+#### Heatmap
+
+```{r}
+suppressPackageStartupMessages({
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+})
+
+plot_diff_abundance_heatmap <- function(prop_res, celltypes = c("B cells", "GC B cells")) {
+  # prepare plot data
+  plot_df <- prop_res %>%
+  # unnest the prop_test list-column
+  mutate(prop_df = map(prop_test, ~ as.data.frame(.x) %>% 
+                       tibble::rownames_to_column(var = "Cell type"))) %>%
+  select(platform_version, segmentation_clean, prop_df) %>%
+  unnest(prop_df) %>%
+  filter(`Cell type` %in% celltypes) %>%  
+  # add Segmentation column for clarity
+  dplyr::rename(`Platform version` = platform_version, Segmentation = segmentation_clean) %>% 
+  ungroup()
+  
+  segmentations <- c("Default", "Proseg", "Cellpose2")
+  platform_versions <- c("MERSCOPE", "Xenium unimodal")
+  segmentation_colours <- c(
+    "Default" = "#F8766D",
+    "Proseg" = "#00BA38",
+    "Cellpose2" = "#619CFF"
+  )
+  
+  # build one matrix per platform (rows = platforms, cols = segmentation x cell_pair)
+  col_order <- expand.grid(segmentation = segmentations, cell_type = celltypes, stringsAsFactors = FALSE)
+  col_order <- col_order[order(match(col_order$cell_type, celltypes),
+                               match(col_order$segmentation, segmentations)), ]
+  col_labels <- paste(col_order$cell_type, col_order$segmentation, sep = "|")
+  mat <- matrix(NA, nrow = length(platform_versions), ncol = nrow(col_order), 
+                dimnames = list(platform_versions, col_labels))
+  sig_mat <- matrix(NA, nrow = length(platform_versions), ncol = nrow(col_order), 
+                dimnames = list(platform_versions, col_labels))
+  
+  for (i in seq_len(nrow(plot_df))) {
+    r <- plot_df$`Platform version`[i]
+    c <- paste(plot_df$`Cell type`[i], plot_df$Segmentation[i], sep = "|")
+    mat[r, c] <- plot_df$PropRatio[i]
+    sig_mat[r, c] <- plot_df$FDR[i] < 0.05
+  }
+  
+  # set annotation for segmentation colour bar
+  seg_bar <- HeatmapAnnotation(
+    Segmentation = col_order$segmentation,
+    col = list(Segmentation = segmentation_colours),
+    show_annotation_name = TRUE,
+    annotation_name_side = "right",
+    annotation_name_gp = gpar(fontsize = 10),
+    simple_anno_size = unit(5, "mm"),
+    annotation_legend_param = list(
+      Segmentation = list(
+        title = "Segmentation",
+        at = segmentations,
+        labels = segmentations,
+        nrow = 1,
+        legend_gp = gpar(fill = segmentation_colours)
+      )
+    )
+  )
+
+  # set colour scale
+  col_fun <- colorRamp2(
+    c(0, 0.5, 1),
+    c("#08306B", "#6BAED6", "white")
+  )
+  
+  # column split by cell pair
+  col_split <- factor(col_order$cell_type, levels = celltypes)
+  
+  # draw heatmap
+  ht_main <- Heatmap(
+    mat,
+    name = "Mean proportion ratio",
+    col = col_fun,
+    
+    # column settings
+    column_split = col_split,
+    column_gap = unit(1.5, "mm"),
+    column_title_gp   = gpar(fontsize = 10),
+    column_title_side = "top",            # segmentation labels at top
+    show_column_names = FALSE,            # hide individual segmentation names
+    column_title_rot = 45,
+    cluster_columns   = FALSE,
+    cluster_column_slices = FALSE,
+    
+    # row settings
+    cluster_rows      = FALSE,
+    row_names_side    = "right",
+    row_names_gp      = gpar(fontsize = 10),
+    
+    # cell size
+    width = unit(ncol(mat) * 5, "mm"),
+    height = unit(nrow(mat) * 5, "mm"),
+    
+    # top annotation (segmentation bar below cell pair title)
+    top_annotation = seg_bar,
+    
+    # significance stars
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      if (!is.na(sig_mat[i, j]) & sig_mat[i, j]) {
+        grid.text("*", x, y, gp = gpar(fontsize = 10, col = "black"))
+      }
+    },
+    
+    # borders
+    border            = TRUE,
+    rect_gp           = gpar(col = "white", lwd = 0.5),
+    
+    # legend
+    heatmap_legend_param = list(
+      title         = "Mean proportion ratio",
+      at            = seq(0, 1, length.out = 3),
+      direction     = "horizontal",
+      title_position = "lefttop",
+      legend_width  = unit(5, "cm")
+    )
+  )
+  
+  draw(ht_main,
+     heatmap_legend_side    = "right",
+     annotation_legend_side = "right",
+     merge_legend           = TRUE)
+}
+```
+
+```{r fig.width=6, fig.height=2}
+cell_abundance_ht <- plot_diff_abundance_heatmap(prop_res)
+
+# save
+pdf("~/data/figures/cell_diff_abundance_heatmap.pdf", width = 6, height = 2)
+cell_abundance_ht
+dev.off()
+```
+
+Heat map with p-values
+
+```{r}
+plot_diff_abundance_heatmap2 <- function(prop_res, celltypes = c("B cells", "GC B cells")) {
+  # prepare plot data
+  plot_df <- prop_res %>%
+  # unnest the prop_test list-column
+  mutate(prop_df = map(prop_test, ~ as.data.frame(.x) %>% 
+                       tibble::rownames_to_column(var = "Cell type"))) %>%
+  select(platform_version, segmentation_clean, prop_df) %>%
+  unnest(prop_df) %>%
+  filter(`Cell type` %in% celltypes) %>%  
+  # add Segmentation column for clarity
+  dplyr::rename(`Platform version` = platform_version, Segmentation = segmentation_clean) %>% 
+  ungroup() %>% 
+  mutate(
+    # formatted labels
+    PropRatio_label = sprintf("%.2f", PropRatio),
+    adj_p_value_label = case_when(
+      FDR < 0.001 ~ paste0("p=", formatC(FDR, format = "e", digits = 1), " *"),
+      FDR < 0.05 ~ paste0("p=", sprintf("%.3f", FDR), " *"),
+      TRUE ~ paste0("p=", sprintf("%.3f", FDR))
+    ),
+    tile_label = paste(PropRatio_label, adj_p_value_label, sep = "\n"),
+    text_color = if_else(
+      PropRatio < 0.5, 
+      "white",
+      "black"
+    ),
+    text_face = if_else(
+      FDR < 0.05,
+      "bold",
+      "plain"
+    )
+  )
+  
+  # heat map
+  ggplot(plot_df, aes(x = Segmentation, y = `Cell type`, fill = PropRatio)) + 
+    geom_tile(aes(color = "white"), linewidth = 1) + 
+    geom_text(aes(label = tile_label, color = text_color, fontface = text_face), 
+              size = 3.5, lineheight = 1) + 
+    scale_colour_manual(
+      values = c("white" = "white", "black" = "black"),
+      guide = "none"   # hides legend
+    ) + 
+    scale_fill_gradientn(
+      colours = c("darkblue", "blue", "royalblue", "lightskyblue", "white"),
+      limits = c(0, 1),
+      oob = scales::squish,
+      na.value = "grey80",
+      name = "Mean proportion ratio",
+      guide = guide_colorbar(
+        title.position = "top",    # "top", "bottom", "left", "right"
+        # label.position = "left",   # "left", "right", "top", "bottom"
+        title.hjust = 0.5          # centre the title
+      )
+    ) + 
+    facet_grid(. ~`Platform version`, scales = "free_x", space = "free_x") + 
+    labs(
+      x = "Segmentation",
+      y = "Cell type"
+    ) + 
+    theme_bw() + 
+    theme(
+      # axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "bottom",
+      panel.grid = element_blank()
+    )
+}
+```
+
+```{r fig.width=6, fig.height=3}
+cell_abundance_ht2 <- plot_diff_abundance_heatmap2(prop_res)
+ggsave("~/data/figures/cell_diff_abundance_heatmap_pvalue.pdf", plot = cell_abundance_ht2, width = 6, height = 3)
+cell_abundance_ht2
+```
+
+
+# Pseudo-bulk DE analysis
+
+Read the result table
+
+```{r}
+res_all <- read.csv("~/SpatialBench_segmentation_comparison/Data/pseudo-bulk_DE_results.csv") %>% 
+  filter(group == "KOvsWT")
+res_all$segmentation <- factor(
+  res_all$segmentation,
+  levels = c("Default", "Proseg", "Cellpose2")
+)
+```
+
+## Volcano plots on selected cell types
+
+Function
+
+```{r}
+# volcano plots showing DE calls across segmentation methods and platforms for a given cell type
+celltype_volcano_plot <- function(de_res) {
+  cell_type <- unique(de_res$cell_type)
+  ggplot(
+    de_res, 
+    aes(x = logFC, y = -log10(adj.P.Val), color = Status)
+) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = c(
+    "Significant (Downregulated)" = "orchid3",
+    "Significant (Upregulated)" = "skyblue3",
+    "False Significant" = "red",
+    "Not Significant" = "black"
+  )) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "darkred") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  scale_x_continuous(limits = c(-4.5, 4.5), breaks = seq(-4, 4, 2)) +
+  scale_y_continuous(limits = c(0, 5)) + 
+  labs(
+    title = cell_type,
+    x = "Log2 Fold Change",
+    y = "-Log10(adj P-value)",
+    color = "DE Status"
+  ) +
+  facet_grid(rows = vars(platform), cols = vars(segmentation)) +
+  theme_bw() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+    strip.text = element_text(size = 12),
+    legend.position = "bottom"
+  ) +
+  geom_label_repel(
+    # data = subset(de_res, Status %in% c("Significant (Downregulated)", "Significant (Upregulated)")),
+    data = subset(de_res, gene %in% c("Tbx21", "Cxcr3") & Status == "Significant (Downregulated)"),
+    aes(label = gene),
+    box.padding = 0.35,
+    point.padding = 0.5,
+    point.size = 0.3,
+    min.segment.length = 0, # uncomment to force drawing the segment from label to the point
+    segment.color = "black",
+    show.legend = FALSE,
+    size = 3.5
+  )
+}
+```
+
+Select B cells, GC B cells, and T cells on the kovswt comparison
+
+```{r fig.width=9, fig.height=6}
+res_all_b_cell <- res_all %>% 
+  filter(cell_type == "B cells")
+
+volcano_plot_b_cell <- celltype_volcano_plot(res_all_b_cell)
+volcano_plot_b_cell
+```
+
+```{r fig.width=9, fig.height=6}
+res_all_gc_b_cell <- res_all %>% 
+  filter(cell_type == "GC B cells")
+
+volcano_plot_gc_b_cell <- celltype_volcano_plot(res_all_gc_b_cell)
+volcano_plot_gc_b_cell
+```
+
+```{r fig.width=9, fig.height=6}
+res_all_t_cell <- res_all %>%
+  filter(cell_type == "T cells")
+
+volcano_plot_t_cell <- celltype_volcano_plot(res_all_t_cell)
+volcano_plot_t_cell
+```
+
+```{r fig.width=7, fig.height=9}
+volcano_plot <- (volcano_plot_b_cell + NoLegend()) / volcano_plot_gc_b_cell
+ggsave("~/data/figures/volcano_plot.pdf", plot = volcano_plot, width = 7, height = 9)
+volcano_plot
+```
+
+## Heat map on selected gene
+
+Function
+
+```{r}
+# heat map showing differential gene expression across cell types, segmentation methods, and platforms for a given gene
+celltype_de_heatmap <- function(de_res, gene_use) {
+  # all combinations that should appear in the heatmap
+  full_grid <- de_res %>% 
+    distinct(cell_type, segmentation, platform)
+  
+  # subset to selected gene
+  de_res_sub <- de_res %>% 
+    filter(gene == gene_use)
+  
+  # join to full grid (introduces NA where gene is missing)
+  plot_df <- full_grid %>% 
+    left_join(de_res_sub, 
+              by = c("cell_type", "segmentation", "platform")) %>% 
+    mutate(
+      # formatted labels
+      logFC_label = if_else(
+        is.na(logFC), 
+        NA_character_, 
+        sprintf("%.2f", logFC)
+      ),
+      adj_p_val_label = case_when(
+        is.na(adj.P.Val) ~ NA_character_,
+        adj.P.Val < 0.001 ~ paste0("p=", formatC(adj.P.Val, format = "e", digits = 1), " 
+                                   *"),
+        adj.P.Val < 0.05 ~ paste0("p=", sprintf("%.3f", adj.P.Val), " *"),
+        TRUE ~ paste0("p=", sprintf("%.3f", adj.P.Val))
+      ),
+      tile_label = if_else(
+        is.na(logFC),
+        "",
+        paste(logFC_label, adj_p_val_label, sep = "\n")
+      ),
+      text_color = if_else(
+        !is.na(logFC) & logFC < -2, 
+        "white",
+        "black"
+      ),
+      # text_color = case_when(
+      #   !is.na(adj.P.Val) & adj.P.Val < 0.05 ~ "darkorange",
+      #   TRUE ~ text_color
+      # ), 
+      text_face = if_else(
+        !is.na(adj.P.Val) & adj.P.Val < 0.05,
+        "bold",
+        "plain"
+      )
+    )
+  
+  # heat map
+  ggplot(plot_df, aes(x = segmentation, y = cell_type, fill = logFC)) + 
+    geom_tile(aes(color = "white"), linewidth = 1) + 
+    geom_text(aes(label = tile_label, color = text_color, fontface = text_face), 
+              size = 3.5, lineheight = 1) + 
+    scale_colour_manual(
+      values = c("white" = "white", "black" = "black", "darkorange" = "darkorange"),
+      guide = "none"   # hides legend
+    ) + 
+    scale_fill_gradient2(
+      low = "darkblue", mid = "white", high = "darkred", 
+      midpoint = 0, 
+      limits = c(-4.5, 1), oob = scales::squish,
+      na.value = "grey80", name = "Log2FC"
+    ) + 
+    facet_grid(. ~platform, scales = "free_x", space = "free_x") + 
+    labs(
+      title = paste("Differential expression of", gene_use),
+      x = "Segmentation",
+      y = "Cell type"
+    ) + 
+    theme_bw() + 
+    theme(
+      # axis.text.x = element_text(angle = 45, hjust = 1),
+      panel.grid = element_blank()
+    )
+}
+```
+
+```{r fig.width=9, fig.height=6}
+tbx21_de_heatmap <- celltype_de_heatmap(res_all, gene_use = "Tbx21")
+ggsave("~/data/figures/tbx21_de_heatmap.pdf", plot = tbx21_de_heatmap, width = 9, height = 6)
+tbx21_de_heatmap
+```
+
+# Purity analysis
+
+# MECR
+
+Read MECR information
+
+```{r}
+MECR_sp <- readRDS("~/SpatialBench_segmentation_comparison/Data/MECR_info_customised.rds")
+MECR_sc <- readRDS("~/SpatialBench_segmentation_comparison/Data/MECR_sc.rds")
+```
+
+Merge across segmentation and platforms
+
+```{r}
+MECR_df <- imap_dfr(MECR_sp, ~{
+  parts <- strsplit(.y, "_")[[1]]
+  .x[["MECR_df"]] %>% 
+    mutate(
+      # standardise the order of cell pairs
+      cell_pair = paste0(
+        "(", 
+        pmin(cell_type1, cell_type2), 
+        ", ", 
+        pmax(cell_type1, cell_type2), 
+        ")"
+      ),
+      platform_version = parts[1],
+      segmentation = parts[2]
+    )
+})
+MECR_df$segmentation <- factor(
+  MECR_df$segmentation,
+  levels = c("Default", "Proseg", "Cellpose2")
+)
+# count the number of gene pairs under each cell pair
+MECR_df <- MECR_df %>% 
+  group_by(platform_version, segmentation, cell_pair) %>% 
+  mutate(n_pairs = n()) %>% 
+  ungroup()
+
+MECR_df_filtered <- MECR_df %>% 
+  filter(platform_version != "Xenium unimodal")
+head(MECR_df_filtered)
+```
+
+```{r}
+MECR_sc_df <- MECR_sc$MECR_df %>% 
+  mutate(
+    # standardise the order of cell pairs
+    cell_pair = paste0(
+      "(", 
+      pmin(cell_type1, cell_type2), 
+      ", ", 
+      pmax(cell_type1, cell_type2), 
+      ")"
+    )
+  )
+head(MECR_sc_df)
+```
+
+### Segmentation level
+
+Filter out the B and GC B gene pairs as GC B cells can express some B cell markers.
+
+```{r}
+MECR_df_filtered <- MECR_df_filtered %>% 
+  filter(
+    # n_pairs > 10,
+    cell_pair != "(B cells, GC B cells)"
+    )
+
+MECR_sc_df_filtered <- MECR_sc_df %>% 
+  group_by(cell_pair) %>% 
+  mutate(n_pairs = n()) %>% 
+  filter(
+    # n_pairs > 10,
+    cell_pair != "(B cells, GC B cells)") %>% 
+  ungroup()
+```
+
+
+```{r fig.width=5, fig.height=4}
+MECR_seg_vlnplt <- ggplot(
+    MECR_df_filtered, 
+    aes(x = segmentation, y = MECR, fill = segmentation)
+  ) + 
+  geom_violin(trim = FALSE, scale = "width") + 
+  geom_boxplot(width = 0.1, outlier.shape = NA, fill = "white", color = "black") +
+  scale_fill_manual(values = colour_panel) +
+  facet_wrap(~platform_version) + 
+  labs(x = "Segmentation",
+       y = "MECR") + 
+  scale_y_continuous(limits = c(0, 1), n.breaks = 8) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+ggsave("~/data/figures/MECR_seg_vlnplt.pdf", plot = MECR_seg_vlnplt, width = 5, height = 4)
+MECR_seg_vlnplt
+```
+
+Compare to MECR from single cell reference 
+
+```{r fig.width=3, fig.height=4}
+MECR_sc_vlnplt <- ggplot(
+    MECR_sc_df_filtered, 
+    aes(x = "", y = MECR)
+  ) + 
+  geom_violin(trim = FALSE, scale = "width", fill = "grey") + 
+  geom_boxplot(width = 0.1, outlier.shape = NA, fill = "white", color = "black") +
+  scale_fill_manual(values = colour_panel) +
+  labs(x = "",
+       y = "MECR") + 
+  scale_y_continuous(limits = c(0, 1), n.breaks = 8) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+MECR_sc_vlnplt
+```
+
+Combine 
+
+```{r}
+MECR_vlnplt <- MECR_sc_vlnplt + MECR_seg_vlnplt + plot_layout(widths = c(1, 6))
+ggsave("~/data/figures/MECR_vlnplt_ref.pdf", plot = MECR_vlnplt, width = 6, height = 4)
+MECR_vlnplt
+```
+
+
+### Cell pair-specific
+
+```{r}
+MECR_cellpair_top <- MECR_df_filtered %>% 
+  group_by(platform_version, segmentation, cell_pair) %>% 
+  summarise(MECR_median = median(MECR), n_pairs = n(), .groups = "drop") %>% 
+  group_by(platform_version, segmentation) %>%
+  arrange(desc(MECR_median)) %>% 
+  slice_head(n = 10)
+
+# find the common cell pairs with most contamination across platforms and segmentation
+# n = 8 means this cell pair is found in every platform and segmentation
+MECR_cellpair_top %>% group_by(cell_pair) %>% summarise(n = n(), n_pairs = first(n_pairs), MECR_median = median(MECR_median)) %>% arrange(desc(n))
+```
+
+```{r}
+MECR_cellpair_bottom <- MECR_df %>% 
+  group_by(platform_version, segmentation, cell_pair) %>% 
+  summarise(MECR_median = median(MECR), n_pairs = n(), .groups = "drop") %>% 
+  group_by(platform_version, segmentation) %>%
+  arrange(MECR_median) %>% 
+  slice_head(n = 10)
+
+# find the common cell pairs with least contamination across platforms and segmentation
+MECR_cellpair_bottom %>% group_by(cell_pair) %>% summarise(n = n(), n_pairs = first(n_pairs)) %>% arrange(desc(n))
+```
+
+#### LMM (TODO) 
+
+First, use linear mixed-effects model (LMM). Treat cell pair as a random effect and combination of platform and segmentation as fixed effects.
+
+```{r}
+suppressPackageStartupMessages({
+  library(lme4)
+  library(lmerTest)
+})
+
+fit <- lmer(
+  MECR ~ platform_version * segmentation + (1 | cell_pair),
+  data = MECR_df
+)
+
+anova(fit)
+summary(fit)
+```
+
+**Interpretation:**
+
+-   TypeIII ANOVA table:
+    -   All three effects are highly significant:
+        1.  Platform matters - MECR differ strongly between MERSCOPE, Xenium unimodal, and Xenium multimodal.
+        2.  Segmentation matters even more - Larger F value indicates that segmentation choices have bigger impact on MECR than platform.
+        3.  There is a platform x segmentation interaction - segmentation effect is not the same on all platforms, cannot interpret platform effects without considering segmentation.
+-   Model structure (sanity check)
+    -   5344 MECR measurements
+    -   55 distinct cell pairs
+    -   Each cell pair has its own baseline MECR (random intercept)
+-   Random effects (how much variation comes from cell pairs)
+    -   About half of the unexplained variance is due to differences between cell pairs ($\sigma^2_\text{cell_pair}/(\sigma^2_\text{cell_pair}+\sigma^2_\text{residual})$)
+    -   The other half is the within-cell-pair variability across platform/segmentation.
+    -   Hence cell pairs are genuinely different from each other and should model them as random effects.
+-   Fixed effects
+    -   Reference level - MERSCOPE + Default
+        -   Intercept = mean MECR for MERSCOPE + Default segmentation
+    -   Main effects: platform
+        -   At default segmentation:
+            -   Xenium multimodal MECR is \~0.2 higher than MERSCOPE.
+            -   Xenium unimodal MECR is \~0.023 higher than MERSCOPE.
+    -   Main effects: segmentation
+        -   On MERSCOPE:
+            -   Proseg increases MECR by \~0.21.
+            -   Cellpose2 slightly decreases MECR (\~-0.024).
+    -   Interaction terms (how segmentation effects change depending on platform)
+        -   Xenium multimodal x Proseg (+0.064)
+            -   Proseg boosts MECR even more on Xenium multimodal than on MERSCOPE.
+            -   Total Proseg effect on Xenium multimodal is: 0.221 (Proseg) + 0.064 = \~0.275
+        -   Xenium unimodal x Proseg (no interaction)
+            -   Proseg behaves basically the same on Xenium unimodal as on MERSCOPE.
+        -   Xenium multimodal x Cellpose2 (-0.042)
+            -   Cellpose2 performs worse on Xenium multimodal than expected from its MERSCOPE effect.
+            -   Platform-specific penalty on Cellpose2.
+-   Rank deficiency warning due to missing of one paltform-segmentation combination (Xenium unimodal + Cellpose2)
+
+**Conclusion:**
+
+> MECR values vary strongly by both platform and segmentation, with segmentation having the largest overall effect, and with clear platform-specific behavior—especially for Proseg and Cellpose2 on Xenium multimodal—while substantial baseline differences exist between cell pairs.'
+
+```{r}
+library(emmeans)
+emm <- emmeans(fit, ~ platform_version * segmentation)
+plot(emm)
+```
+
+Which cell pairs differ most overall?
+
+Based on per-cell-pair baseline shifts and deviation from the global mean.
+
+```{r}
+re <- ranef(fit)$cell_pair
+re$abs_effect <- abs(re[,1])
+re <- re[order(-re$abs_effect), ]
+re
+```
+
+Which cell pairs show different patterns across platform/segmentation?
+
+```{r}
+fit_rs <- lmer(
+  MECR ~ platform_version * segmentation +
+    (platform_version * segmentation | cell_pair),
+  data = MECR_df
+)
+ranef(fit_rs)$cell_pair
+```
+
+
+Find the highly variable cell pairs across segmentation and platforms.
+
+```{r}
+cellpair_var <- MECR_df %>% 
+  group_by(cell_pair) %>% 
+  summarise(
+    MECR_sd = sd(MECR, na.rm = TRUE),
+    MECR_range = max(MECR) - min(MECR)
+  ) %>% 
+  arrange(desc(MECR_sd))
+cellpair_var
+```
+
+Select representative cell pairs for heat map
+
+```{r}
+top_cellpair <- MECR_cellpair_top %>% 
+  group_by(cell_pair) %>% 
+  summarise(n = n()) %>%
+  group_by(n) %>% 
+  slice(1) %>% 
+  pull(cell_pair)
+
+bottom_cellpair <- MECR_cellpair_bottom %>% 
+  group_by(cell_pair) %>% 
+  summarise(n = n()) %>%
+  group_by(n) %>% 
+  slice(1) %>% 
+  pull(cell_pair)
+
+variable_pairs <- head(cellpair_var$cell_pair)
+```
+
+#### Heatmap
+
+Functions
+
+```{r}
+suppressPackageStartupMessages({
+  library(ComplexHeatmap)
+  library(circlize)
+  library(grid)
+})
+
+plot_MECR_cellpair_heatmap <- function(MECR_sp, MECR_sc, cellpair_use = NULL, show_n_pairs = TRUE, show_anno_legend = FALSE) {
+  if (is.null(cellpair_use)) {
+    cellpair_use <-  unique(MECR_sp$cell_pair)
+  }
+  # prepare plot data
+  plot_df <- MECR_sp %>% 
+    filter(cell_pair %in% cellpair_use) %>% 
+    group_by(platform_version, segmentation, cell_pair) %>% 
+    summarise(MECR_median = median(MECR), n_pairs = n(), .groups = "drop") %>% 
+    ungroup()
+  
+  cell_pairs <- cellpair_use
+  segmentations <- c("Default", "Proseg", "Cellpose2")
+  platform_versions <- c("MERSCOPE", "Xenium multimodal")
+  segmentation_colours <- c(
+    "Default" = "#F8766D",
+    "Proseg" = "#00BA38",
+    "Cellpose2" = "#619CFF"
+  )
+  
+  # build one matrix per platform (rows = platforms, cols = segmentation x cell_pair)
+  col_order <- expand.grid(segmentation = segmentations, cell_pair = cell_pairs, stringsAsFactors = FALSE)
+  col_order <- col_order[order(match(col_order$cell_pair, cell_pairs),
+                               match(col_order$segmentation, segmentations)), ]
+  col_labels <- paste(col_order$cell_pair, col_order$segmentation, sep = "|")
+  mat <- matrix(NA, nrow = length(platform_versions), ncol = nrow(col_order), 
+                dimnames = list(platform_versions, col_labels))
+  
+  for (i in seq_len(nrow(plot_df))) {
+    r <- plot_df$platform_version[i]
+    c <- paste(plot_df$cell_pair[i], plot_df$segmentation[i], sep = "|")
+    mat[r, c] <- plot_df$MECR_median[i]
+  }
+  
+  # set annotation for segmentation colour bar
+  seg_bar <- HeatmapAnnotation(
+    Segmentation = col_order$segmentation,
+    col = list(Segmentation = segmentation_colours),
+    show_annotation_name = TRUE,
+    annotation_name_side = "right",
+    annotation_name_gp = gpar(fontsize = 10),
+    simple_anno_size = unit(5, "mm"),
+    annotation_legend_param = list(
+      Segmentation = list(
+        title = "Segmentation",
+        at = segmentations,
+        labels = segmentations,
+        nrow = 1,
+        legend_gp = gpar(fill = segmentation_colours)
+      )
+    ),
+    show_legend = show_anno_legend
+  )
+
+  # set colour scale
+  col_fun <- colorRamp2(
+    seq(0, 1, length.out = 5),
+    c("white", "#FFE5CC", "#FFB347", "#FF8C00", "#FF6600")
+  )
+  
+  # column split by cell pair
+  col_split <- factor(col_order$cell_pair, levels = cell_pairs)
+  
+  # draw heatmap
+  ht_main <- Heatmap(
+    mat,
+    name = "median MECR",
+    col = col_fun,
+    
+    # column settings
+    column_split = col_split,
+    column_gap = unit(1.5, "mm"),
+    column_title_gp   = gpar(fontsize = 9),
+    column_title_side = "top",            # segmentation labels at top
+    show_column_names = FALSE,            # hide individual segmentation names
+    column_title_rot = 45,
+    cluster_columns   = FALSE,
+    cluster_column_slices = FALSE,
+    
+    # row settings
+    cluster_rows      = FALSE,
+    row_names_side    = "right",
+    row_names_gp      = gpar(fontsize = 9),
+    
+    # cell size
+    width = unit(ncol(mat) * 5, "mm"),
+    height = unit(nrow(mat) * 5, "mm"),
+    
+    # top annotation (segmentation bar below cell pair title)
+    top_annotation = seg_bar,
+    
+    # borders
+    border            = TRUE,
+    rect_gp           = gpar(col = "white", lwd = 0.5),
+    
+    # legend
+    heatmap_legend_param = list(
+      title         = "Median MECR",
+      at            = seq(0, 1, length.out = 5),
+      direction     = "horizontal",
+      title_position = "lefttop",
+      legend_width  = unit(5, "cm")
+    )
+  )
+  
+  # add single-cell reference MECR
+  MECR_sc_median <- MECR_sc %>% 
+    group_by(cell_pair) %>% 
+    summarise(MECR_median = median(MECR), .groups = "drop") %>% 
+    arrange(match(cell_pair, cell_pairs))
+  
+  mat_sc <- matrix(NA, nrow = 1, ncol = nrow(col_order),
+                   dimnames = list("scRNA-seq", col_labels))
+  
+  for (i in seq_len(nrow(col_order))) {
+    cp <- col_order$cell_pair[i]
+    mat_sc[1, i] <- MECR_sc_median$MECR_median[MECR_sc_median$cell_pair == cp]
+  }
+  
+  ht_sc <- Heatmap(
+      mat_sc,
+      name = "scRNA-seq",
+      col  = col_fun,
+  
+      column_split          = col_split,        # same split as ht_main
+      column_gap            = unit(1.5, "mm"),
+      show_column_names     = FALSE,
+      column_title          = NULL,             # no repeated labels
+      cluster_columns       = FALSE,
+      cluster_column_slices = FALSE,
+  
+      cluster_rows   = FALSE,
+      row_names_side = "right",
+      row_names_gp   = gpar(fontsize = 9),
+  
+      width  = unit(ncol(mat_sc) * 5, "mm"),
+      height = unit(5, "mm"),
+  
+      border  = TRUE,
+      rect_gp = gpar(lwd = 0),
+      show_heatmap_legend = FALSE
+    )
+  
+  if (show_n_pairs) {
+    # n_pairs: one value per cell_pair (collapsed across segmentations)
+    n_pairs <- plot_df %>%
+      group_by(cell_pair) %>%
+      summarise(n_pairs = mean(n_pairs, na.rm = TRUE), .groups = "drop") %>%
+      arrange(match(cell_pair, cell_pairs))
+  
+    mat_n <- matrix(NA, nrow = 1, ncol = nrow(col_order),
+                    dimnames = list("N pairs", col_labels))
+    
+    for (i in seq_len(nrow(col_order))) {
+      cp <- col_order$cell_pair[i]
+      mat_n[1, i] <- n_pairs$n_pairs[n_pairs$cell_pair == cp]
+    }
+  
+    # n_pairs colour scale
+    n_max <- max(mat_n, na.rm = TRUE)
+    col_fun_n <- colorRamp2(
+      c(0, n_max / 2, n_max),
+      c("white", "#6BAED6", "#08306B")
+    )
+    
+    # n_pairs heatmap — same column structure as ht_main
+    ht_n <- Heatmap(
+      mat_n,
+      name = "N pairs",
+      col  = col_fun_n,
+  
+      column_split          = col_split,        # same split as ht_main
+      column_gap            = unit(1.5, "mm"),
+      show_column_names     = FALSE,
+      column_title          = NULL,             # no repeated labels
+      cluster_columns       = FALSE,
+      cluster_column_slices = FALSE,
+  
+      cluster_rows   = FALSE,
+      row_names_side = "right",
+      row_names_gp   = gpar(fontsize = 9),
+  
+      width  = unit(ncol(mat_n) * 5, "mm"),
+      height = unit(5, "mm"),
+  
+      # show n value once per group (only label the middle column)
+      cell_fun = function(j, i, x, y, width, height, fill) {
+        if (j %% length(segmentations) == 2) {   # middle segmentation column
+          value <- round(mat_n[i, j])
+          text_colour <- ifelse(value > 20, "white", "black")
+          grid.text(
+            label = value,
+            x, y,
+            gp = gpar(fontsize = 8, col = text_colour)
+          )
+        }
+      },
+  
+      border  = TRUE,
+      rect_gp = gpar(lwd = 0),
+  
+      heatmap_legend_param = list(
+        title          = "N pairs",
+        direction      = "horizontal",
+        title_position = "lefttop",
+        legend_width   = unit(4, "cm")
+      )
+    )
+    
+    # combine
+    ht_list <- ht_main %v% ht_sc %v% ht_n
+  } else {
+    ht_list <- ht_main %v% ht_sc
+  }
+  
+  draw(ht_list,
+     heatmap_legend_side    = "bottom",
+     annotation_legend_side = "bottom",
+     merge_legend           = TRUE)
+}
+```
+
+```{r fig.width=8, fig.height=4}
+top_ht <- plot_MECR_cellpair_heatmap(MECR_df_filtered, MECR_sc$MECR_df, cellpair_use = c(top_cellpair[-1], "(Erythrocyte-like, T cells)"))
+
+# save
+pdf("~/data/figures/MECR_top_cellpair_heatmap_n_pairs.pdf", width = 8, height = 4)
+top_ht
+dev.off()
+```
+
+```{r fig.width=8, fig.height=4}
+bottom_ht <- plot_MECR_cellpair_heatmap(MECR_df, cellpair_use = bottom_cellpair)
+
+# save
+pdf("~/data/figures/MECR_bottom_cellpair_heatmap.pdf", width = 8, height = 4)
+bottom_ht
+dev.off()
+```
+
+```{r fig.width=8, fig.height=4}
+var_ht <- plot_MECR_cellpair_heatmap(MECR_df, cellpair_use = variable_pairs)
+
+# save
+pdf("~/data/figures/MECR_variable_cellpair_heatmap_n_pairs.pdf", width = 8, height = 4)
+var_ht
+dev.off()
+```
+
+
+```{r fig.width=8, fig.height=4}
+var_ht <- plot_MECR_cellpair_heatmap(MECR_df, cellpair_use = variable_pairs2)
+
+# # save
+# pdf("~/data/figures/MECR_variable_cellpair_heatmap.pdf", width = 8, height = 4)
+# var_ht
+# dev.off()
+```
+
+Combine segmentation and platforms
+
+```{r fig.width=7, fig.height=4}
+library(tidyr)
+library(dplyr)
+library(ComplexHeatmap)
+library(circlize)
+
+MECR_sc_df_filtered <- MECR_sc_df_filtered %>% 
+  group_by(cell_pair) %>% 
+  mutate(n_pairs = n(), method_combo = "scRNA-seq") %>% 
+  ungroup()
+MECR_mat <- MECR_df_filtered %>%
+  unite(method_combo, platform_version, segmentation, sep = " ") %>%
+  bind_rows(MECR_sc_df_filtered) %>% 
+  # filter(n_pairs > 10) %>% 
+  group_by(method_combo, cell_pair) %>% 
+  summarise(MECR_median = median(MECR, na.rm = TRUE), .groups = "drop") %>% 
+  pivot_wider(
+    names_from = method_combo,
+    values_from = MECR_median
+  ) %>%
+  column_to_rownames("cell_pair") %>% 
+  t()
+
+row_order <- c("scRNA-seq", "MERSCOPE Default", "MERSCOPE Proseg", "MERSCOPE Cellpose2",
+               "Xenium multimodal Default", "Xenium multimodal Proseg", "Xenium multimodal Cellpose2")
+
+# cluster manually
+mat4clust <- MECR_mat[row_order, ]
+d <- dist(t(mat4clust), method = "euclidean")
+hc <- hclust(d, method = "ward.D2")
+
+col_order <- colnames(mat4clust)[hc$order]
+
+n_pairs_mat <- MECR_df_filtered %>% 
+  group_by(cell_pair) %>% 
+  summarise(n_pairs = first(n_pairs)) %>% 
+  # Build a 1-row matrix matching column order of mecr_matrix
+  { setNames(.$n_pairs, .$cell_pair) } %>%
+  .[col_order] %>%
+  matrix(nrow = 1, dimnames = list("N pairs", names(.))) 
+
+n_max <- max(n_pairs_mat, na.rm = TRUE)
+col_fun_n <- colorRamp2(
+  c(0, n_max / 2, n_max),
+  c("white", "#6BAED6", "#08306B")
+)
+
+# --- N pairs annotation heatmap (bottom) ---
+npairs_heatmap <- Heatmap(
+  n_pairs_mat,
+  name = "N pairs",
+  col  = col_fun_n,
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    value <- round(n_pairs_mat[i, j])
+    text_colour <- ifelse(value > 20, "white", "black")
+    grid.text(
+      label = value,
+      x, y,
+      gp = gpar(fontsize = 8, col = text_colour)
+    )
+  },
+  show_row_names    = TRUE,
+  show_column_names = FALSE,   # shared with main heatmap above
+  row_names_side    = "right",
+  column_order      = col_order,  # lock column order
+  cluster_rows      = FALSE,
+  cluster_columns   = FALSE,
+  width  = unit(ncol(n_pairs_mat) * 5, "mm"),
+  height = unit(5, "mm"),
+  heatmap_legend_param = list(
+    title          = "N pairs",
+    at             = c(0, 15, 30, 45, 60),
+    direction      = "horizontal",
+    title_position = "lefttop"
+  )
+)
+
+# --- Main MECR heatmap ---
+mecr_heatmap <- Heatmap(
+  MECR_mat[, col_order],
+  name = "Median MECR",
+  col  = colorRamp2(
+    seq(0, 1, length.out = 5),
+    c("white", "#FFE5CC", "#FFB347", "#FF8C00", "#FF6600")
+  ),
+  cluster_rows      = TRUE,
+  cluster_columns   = FALSE,
+  show_row_names    = TRUE,
+  show_column_names = TRUE,
+  row_names_side    = "right",
+  column_names_side = "top",
+  column_names_rot  = 45,
+  column_names_gp   = gpar(fontsize = 8),
+  row_names_gp      = gpar(fontsize = 10),
+  rect_gp           = gpar(col = "white", lwd = 1.5),
+  width = unit(ncol(MECR_mat) * 5, "mm"),
+  height = unit(nrow(MECR_mat) * 5, "mm"),
+  heatmap_legend_param = list(
+    title          = "Median MECR",
+    at             = c(0, 0.25, 0.5, 0.75, 1),
+    direction      = "horizontal",
+    title_position = "lefttop"
+  )
+)
+
+# --- Draw stacked ---
+pdf("~/data/figures/MECR_heatmap_filtered_n_pairs.pdf", width = 7, height = 4)
+draw(
+  mecr_heatmap %v% npairs_heatmap,   # %v% stacks vertically
+  heatmap_legend_side   = "bottom",
+  annotation_legend_side = "bottom",
+  merge_legends = TRUE
+)
+dev.off()
+
+draw(
+  mecr_heatmap %v% npairs_heatmap,   # %v% stacks vertically
+  heatmap_legend_side   = "bottom",
+  annotation_legend_side = "bottom",
+  merge_legends = TRUE
+)
+```
+
+
+```{r fig.width=15, fig.height=4}
+draw(
+  mecr_heatmap %v% npairs_heatmap,   # %v% stacks vertically
+  heatmap_legend_side   = "bottom",
+  annotation_legend_side = "bottom",
+  merge_legends = TRUE
+)
+```
+
+
+

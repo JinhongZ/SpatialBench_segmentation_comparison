@@ -25,7 +25,7 @@ add_common_gene_counts <- function(obj, common_genes) {
   return(obj)
 } 
 
-generate_sample_df <- function(obj, segmentation_clean, count_col) {
+generate_sample_df <- function(obj, segmentation, count_col) {
   # extract cell metadata
   dt <- data.table::as.data.table(obj@meta.data)
   has_common <- "common_gene_counts" %in% names(dt)
@@ -37,11 +37,11 @@ generate_sample_df <- function(obj, segmentation_clean, count_col) {
     transcript_count = sum(get(count_col), na.rm = TRUE),
     common_gene_counts = if (has_common) sum(common_gene_counts, na.rm = TRUE) else sum(get(count_col), na.rm = TRUE),
     batch = batch[1],
-    segmentation_clean = segmentation_clean
+    segmentation = segmentation
   ), by = sample_id]
 }
 
-generate_cell_df <- function(obj, segmentation_clean, count_col, feature_col) {
+generate_cell_df <- function(obj, segmentation, count_col, feature_col) {
   # extract cell metadata
   dt <- data.table::as.data.table(obj@meta.data)
   dt[, .(
@@ -55,13 +55,13 @@ generate_cell_df <- function(obj, segmentation_clean, count_col, feature_col) {
     aspect_ratio = if("aspect_ratio" %in% colnames(dt)) aspect_ratio else NA_real_,
     log10_signal_density = if("log10_signal_density" %in% colnames(dt)) log10_signal_density else NA_real_,
     log10_signal_density_outlier_sc = if("log10_signal_density_outlier_sc" %in% colnames(dt)) log10_signal_density_outlier_sc else NA_real_,
-    segmentation_clean = segmentation_clean
+    segmentation = segmentation
   )]
 }
 
 extract_sample_and_cell_df <- function(
     file_path,
-    segmentation_clean,
+    segmentation,
     count_col,
     feature_col
 ) {
@@ -73,13 +73,13 @@ extract_sample_and_cell_df <- function(
   
   sample_df <- generate_sample_df(
     obj,
-    segmentation_clean = segmentation_clean,
+    segmentation = segmentation,
     count_col = count_col
   )
   
   cell_df <- generate_cell_df(
     obj,
-    segmentation_clean = segmentation_clean,
+    segmentation = segmentation,
     count_col   = count_col,
     feature_col = feature_col
   )
@@ -97,7 +97,7 @@ save_sample_and_cell_df <- function(sample_info, common_genes, out_path) {
   metadata <- sample_info %>% 
     mutate(
       out = purrr::pmap(
-        list(file_path, segmentation_clean, count_col, feature_col),
+        list(file_path, segmentation, count_col, feature_col),
         extract_sample_and_cell_df
       )
     ) %>% 
@@ -269,8 +269,8 @@ combine_ImageDimPlot <- function(
     roi_list <- lapply(seurat_list, function(obj) {
       crop_fov(
         obj[[fov]],
-        x = c(crop_bounds$ymin, crop_bounds$ymax),
-        y = c(crop_bounds$xmin, crop_bounds$xmax)
+        x = c(crop_bounds$xmin, crop_bounds$xmax),
+        y = c(crop_bounds$ymin, crop_bounds$ymax)
       )
     })
   }
@@ -279,8 +279,8 @@ combine_ImageDimPlot <- function(
   rect_layer <- NULL
   if (!is.null(rect_bounds)) {
     rect_layer <- geom_rect(
-      aes(xmin = rect_bounds$xmin, xmax = rect_bounds$xmax,
-          ymin = rect_bounds$ymin, ymax = rect_bounds$ymax),
+      aes(xmin = rect_bounds$ymin, xmax = rect_bounds$ymax,
+          ymin = rect_bounds$xmin, ymax = rect_bounds$xmax),
       fill = NA,
       color = "black"
     )
@@ -299,7 +299,7 @@ combine_ImageDimPlot <- function(
     
     # create the image dimensional plot
     p <- ImageDimPlot(
-      obj, fov = fov_use, boundaries = boundaries, 
+      obj, fov = fov_use, boundaries = boundaries, border.size = 0.1,
       group.by = group.by, cols = cols, axes = FALSE
     ) + labs(title = "") + rect_layer
     

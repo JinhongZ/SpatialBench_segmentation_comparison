@@ -15,7 +15,7 @@ marker_list_ann <- list(
   `Erythrocyte-like` = c("Tpx2", "Rrm1", "Ezh2", "Cdca8", "Pola1", "Ccnd3") # NB: the gene panel does not have strong markers for erythrocytes, those are found from single cell reference subset to MERSCOPE gene panel
 )
 
-# customised marker list (ensures all markers present in both gene panesl)
+# customised marker list (ensures all markers present in both gene panel)
 marker_list_cus <- list(
   `Macrophages` = c("Adgre1","Cd209b","Cd274","Cd68","Cd80","Csf1r"),
   `B cells` = c("Cd19","Cd22","Cr2","Ighd","Fcer2a","Cd72","Bcr"),
@@ -38,19 +38,24 @@ marker_df_spleen_panel <- data.frame(
 )
 
 # function slightly modified from (https://github.com/Center-for-Spatial-OMICs/SpatialQM/blob/60b9217cdab5f95c8f34a7261fe76d1bbbcefebf/R/utils_update_final.R#L1729)
-getMECR_panel <- function(seu_obj,
+getMECR_panel <- function(obj,
                           assay_use = NULL,
                           layer_use = c("counts","data"),
                           marker_df = marker_df_spleen_panel) {
   
-  stopifnot(!is.null(seu_obj))
+  stopifnot(!is.null(obj))
   
   layer_use <- match.arg(layer_use)
   
-  # pick assay
-  if (is.null(assay_use)) assay_use <- Seurat::DefaultAssay(seu_obj)
-  
-  exp <- Seurat::GetAssayData(seu_obj, assay = assay_use, layer = layer_use)
+  if (inherits(obj, "Seurat")) {
+    # pick assay
+    if (is.null(assay_use)) assay_use <- Seurat::DefaultAssay(obj)
+    exp <- Seurat::GetAssayData(obj, assay = assay_use, layer = layer_use)
+  } else if (inherits(obj, "SingleCellExperiment")) {
+    exp <- assay(obj, layer_use)
+  } else {
+    stop("The input should be either Seurat or SingleCellExperiment object")
+  }
   
   # intersect markers with data
   genes <- intersect(rownames(exp), marker_df$gene)
