@@ -1,6 +1,0 @@
-Loading [1mR/4.5.2[22m
-  [94mLoading requirement[0m: libpng/1.6.43 libjpeg-turbo/3.0.2 libtiff/4.6.0
-    ninja/1.11.1 bzip2/1.0.8 pcre2/10.42 openjdk/21.0.2 cairo/1.19.0
-running
-  '/stornext/System/data/software/rhel/9/base/tools/R/4.5.2/lib64/R/bin/R --no-echo --no-restore --vanilla --file=create_assignment_info.r'
-
