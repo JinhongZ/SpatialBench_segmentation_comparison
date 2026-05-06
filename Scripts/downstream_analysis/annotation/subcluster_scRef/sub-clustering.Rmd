@@ -1,0 +1,238 @@
+---
+title: "sub-clustering"
+output: html_document
+date: "2025-07-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/data/")
+```
+
+# Load packages
+
+```{r}
+suppressPackageStartupMessages({
+  library(SingleCellExperiment)
+  library(scater)
+  library(scran)
+  library(bluster)
+  library(BiocParallel)
+  library(dplyr)
+  library(RColorBrewer)
+})
+```
+
+# Load dataset
+
+```{r}
+ref <- readRDS("/stornext/General/data/user_managed/grpu_mritchie_1/Mei/SCORE/ST_MD/analysis/output/RDS/sce.labelled.RDS")
+```
+
+# Sub-clustering B cell clusters
+
+Extract B cell clusters.
+
+```{r}
+b_cells <- ref[, ref$cluster_label == "B cells"]
+```
+
+Normalise and identify variable genes as the number of B cells is large.
+
+```{r}
+# model gene variance
+mgv <- modelGeneVar(b_cells)
+b_cells <- denoisePCA(b_cells, technical = mgv, subset.row = getTopHVGs(mgv, n = 7000))
+```
+
+Dimensionality reduction and clustering.
+
+```{r}
+# UMPA
+b_cells <- runUMAP(b_cells, dimred = "PCA")
+```
+
+Use Leiden clustering method with resolution option.
+
+```{r}
+# set up parallelism
+param <- MulticoreParam(workers = 4)
+```
+
+
+```{r}
+# set up k and resolution values for parameter tuning
+ks <- seq(30, 70, 10)
+res <- seq(0.3, 1, 0.1)
+results <- list()
+
+for (k in ks) {
+  for (r in res) {
+    cluster <- clusterRows(
+      reducedDim(b_cells, "PCA"), 
+      BLUSPARAM = SNNGraphParam(k = k, cluster.fun = "leiden", 
+                                cluster.args = list(resolution = r), 
+                                BPPARAM = param)
+    )
+    key <- paste0("k", k, "_res", r)
+    results[[key]] <- cluster
+  }
+}
+```
+
+```{r}
+# plot clusters on UMAP
+for (key in names(results)) {
+  b_cells$subcluster <- results[[key]]
+  print(plotUMAP(b_cells, colour_by = "subcluster") + ggtitle(key))
+}
+```
+
+
+```{r}
+b_cells$subcluster <- results[["k60_res0.6"]]
+plotUMAP(b_cells, colour_by = "subcluster") + ggtitle("k60_res0.6")
+```
+
+```{r}
+markers <- findMarkers(b_cells, groups = b_cells$subcluster)
+
+top_markers <- lapply(
+  markers, 
+  function(cluster) {
+    as.data.frame(cluster) %>% 
+      filter(FDR < 0.05 & abs(summary.logFC > 1)) %>% 
+      arrange(desc(abs(summary.logFC))) %>% 
+      slice_head(n = 20)
+  }
+)
+```
+
+```{r}
+b_cell_markers <- c("Cd22", "Bhlhe41", "Cd19", "Ighd", "Ighm")
+
+gcb_cell_markers <- c("Tbx21", "Pola1", "Nek2", "H2-Q6", "Tpx2", "Gpsm2", "Rrm1", 
+                      "Ccnd3","Akap12", "Tifa", "Cdca8", "Scn8a", "Pfn2", 
+                      "Otub2", "Fcer2a", "Ifi30", "Stx11", "Cd40", "Ankrd33b", 
+                      "Cd86", "Cd72", "Lmo4", "B3gnt5", "Serpinb6b", "Gstt2", 
+                      "Actb", "Cd83", "Bcl6", "Aicda", "Rgs13")
+
+plasma_cell_markers <- c("Cd38", "Jchain")
+```
+
+```{r}
+plotExpression(b_cells, features = b_cell_markers, 
+               x = "subcluster",
+               colour_by = "subcluster") 
+```
+
+Cluster 1: Pola1, Aicda, Rgs13
+
+```{r}
+for (i in seq(1, length(gcb_cell_markers), 6)) {
+  print(plotExpression(b_cells, features = gcb_cell_markers[i:(i+5)], 
+               x = "subcluster",
+               colour_by = "subcluster") )
+}
+```
+```{r}
+plotReducedDim(b_cells, dimred = "UMAP", colour_by = "Pola1")
+```
+
+```{r}
+plotReducedDim(b_cells, dimred = "UMAP", colour_by = "Aicda")
+```
+
+```{r}
+plotReducedDim(b_cells, dimred = "UMAP", colour_by = "Rgs13")
+```
+
+Cluster 6: Jchain
+
+```{r}
+plotExpression(b_cells, features = plasma_cell_markers, 
+               x = "subcluster",
+               colour_by = "subcluster") 
+```
+
+```{r}
+plotReducedDim(b_cells, dimred = "UMAP", colour_by = "Jchain")
+```
+
+# Assign refined cell labels back to original data
+
+Assign cell labels to sub-cluster
+
+```{r}
+b_cells$subcluster_labels <- "B cells"
+b_cells$subcluster_labels[b_cells$subcluster == 1] <-  "GC B cells"
+b_cells$subcluster_labels[b_cells$subcluster == 6] <-  "Plasma cells"
+b_cells$subcluster_labels <- as.factor(b_cells$subcluster_labels)
+```
+
+```{r}
+plotReducedDim(b_cells, dimred = "UMAP", colour_by = "subcluster_labels")
+```
+
+Assign defined GC and plasma cell labels back to original data.
+
+```{r}
+sub_labels <- b_cells$subcluster_labels
+names(sub_labels) <- colnames(b_cells)
+
+ref$fine_labels <- as.character(ref$cluster_label)
+colData(ref)[names(sub_labels), "fine_labels"] <- as.character(sub_labels)
+ref$fine_labels <- as.factor(ref$fine_labels)
+```
+
+Check on dimension reduction plot.
+
+```{r}
+palette <- brewer.pal(12, "Paired")
+plotReducedDim(ref, dimred = "UMAP", color_by = "fine_labels") + 
+  scale_color_manual(values = palette)
+```
+
+# Granulocytes & neutrophils
+
+Neutrophil markers: Ngp, S100a9
+
+Granulocyte cluster has high expression level of neutrophil markers. 
+
+```{r}
+plotReducedDim(ref, dimred = "UMAP", colour_by = "Ngp")
+plotReducedDim(ref, dimred = "UMAP", colour_by = "S100a9")
+```
+
+```{r}
+plotExpression(ref, features = c("Ngp", "S100a9"), 
+               x = "fine_labels", colour_by = "fine_labels") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+```
+
+
+# Stem cells & endothelial cells
+
+Endothelial cell markers: Egfl7, Madcam1
+
+```{r}
+plotReducedDim(ref, dimred = "UMAP", colour_by = "Egfl7")
+plotReducedDim(ref, dimred = "UMAP", colour_by = "Madcam1")
+```
+Check expression level of nuetrophil marker Egfl7 in stem cell cluster.
+
+```{r}
+plotExpression(ref, features = "Egfl7", 
+               x = "fine_labels", colour_by = "fine_labels") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.position = "none")
+# cannot map stem cell cluster to endothelial cells
+```
+
+# Save refined cell labels.
+
+```{r}
+saveRDS(ref, file = "sce.labelled.fine.RDS")
+```
+

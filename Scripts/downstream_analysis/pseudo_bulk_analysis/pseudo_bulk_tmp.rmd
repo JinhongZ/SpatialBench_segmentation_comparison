@@ -1,0 +1,1058 @@
+---
+title: "pseudo_bulk.rmd"
+output: 
+  html_document:
+    toc: true
+    toc_float: 
+      collapsed: false
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/data")
+```
+
+# Load packages
+
+```{r}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(tidyverse)
+  library(limma)
+  library(edgeR)
+  library(ggplot2)
+  library(ggrepel)
+  library(dplyr)
+  library(ggpubr)
+  library(scales)
+  library(ComplexUpset)
+  library(patchwork)
+})
+```
+
+# Load datasets
+
+```{r}
+# default segmentation
+merged_default <- readRDS("default_segmentation/SingleR_annotated/merged_default.rds")
+
+# baysor segmentation
+merged_baysor <- readRDS("baysor_segmentation/dimension_reduction/SingleR_annotation/merged_baysor.rds")
+
+# cellpose2 segmentation
+merged_cellpose2 <- readRDS("/vast/projects/SpatialBench/segmentation/Cellpose/cellpose_updated_seurat/cellpose_seu_obj/dimension_reduction/SingleR_annotation/merged_cellpose2.rds")
+```
+
+# Visualsie merged data
+
+## Cell type plot
+
+```{r message=FALSE}
+cell_plot_d <- DimPlot(merged_default, reduction = 'umap', group.by = 'cluster_label', label = TRUE) + 
+  ggtitle("Cell types")
+cell_plot_d
+```
+
+```{r message=FALSE}
+cell_plot_b <- DimPlot(merged_baysor, reduction = 'umap', group.by = 'cluster_label', label = TRUE) + 
+  ggtitle("Cell types")
+cell_plot_b
+```
+
+```{r message=FALSE}
+cell_plot_c <- DimPlot(merged_cellpose2, reduction = 'umap', group.by = 'cluster_label', label = TRUE) + 
+  ggtitle("Cell types")
+cell_plot_c
+```
+
+## Group plot
+
+```{r message=FALSE}
+grp_plot_d <- DimPlot(merged_default, reduction = 'umap', group.by = 'stim', alpha = 0.5) + 
+  ggtitle("Groups")
+grp_plot_d
+```
+
+```{r message=FALSE}
+grp_plot_b <- DimPlot(merged_baysor, reduction = 'umap', group.by = 'stim', alpha = 0.5) + 
+  ggtitle("Groups")
+grp_plot_b
+```
+
+```{r message=FALSE}
+grp_plot_c <- DimPlot(merged_cellpose2, reduction = 'umap', group.by = 'stim') + 
+  ggtitle("Groups")
+grp_plot_c
+```
+
+
+## Sample plot
+
+```{r message=FALSE}
+sample_plot_d <- DimPlot(merged_default, reduction = 'umap', group.by = 'sample_id') + 
+  ggtitle("Samples")
+sample_plot_d
+```
+
+```{r message=FALSE}
+sample_plot_b <- DimPlot(merged_baysor, reduction = 'umap', group.by = 'sample_id') + 
+  ggtitle("Samples")
+sample_plot_b
+```
+
+```{r message=FALSE}
+sample_plot_c <- DimPlot(merged_cellpose2, reduction = 'umap', group.by = 'sample_id') + 
+  ggtitle("Samples")
+sample_plot_c
+```
+
+## All-in-one
+
+```{r fig.width=20, fig.height=5}
+plots_d <- ggarrange(cell_plot_d, grp_plot_d, sample_plot_d, ncol = 3)
+annotate_figure(plots_d, top = text_grob("Defaults segmentation", face = "bold", size = 20))
+```
+
+```{r fig.width=20, fig.height=5}
+plots_b <- ggarrange(cell_plot_b, grp_plot_b, sample_plot_b, ncol = 3)
+annotate_figure(plots_b, top = text_grob("Baysor segmentation", face = "bold", size = 20))
+```
+
+```{r fig.width=20, fig.height=5}
+plots_c <- ggarrange(cell_plot_c, grp_plot_c, sample_plot_c, ncol = 3)
+annotate_figure(plots_c, top = text_grob("Cellpose2 segmentation", face = "bold", size = 20))
+```
+
+# Pseudo-bulk analysis
+
+## Aggregate counts to a sample level
+
+```{r}
+merged_default$samples <- paste0(merged_default$stim, merged_default$sample_id)
+merged_baysor$samples <- paste0(merged_baysor$stim, merged_baysor$sample_id)
+merged_cellpose2$samples <- paste0(merged_cellpose2$stim, merged_cellpose2$sample_id)
+
+# NKs <- which(merged_cellpose$samples == "wt713" & merged_cellpose$manual_label == "NK")
+# merged_cellpose@meta.data$manual_label[NKs] <- "Macrophages"
+# saveRDS(merged_cellpose, "~/data/default_segmentation/merged_cellpose.rds")
+
+# NKs <- which(merged_baysor$samples == "wt710" & merged_baysor$manual_label == "NK")
+# merged_baysor@meta.data$manual_label[NKs] <- "Macrophages"
+# saveRDS(merged_baysor, "~/data/baysor_segmentation/merged_baysor.rds")
+
+# aggregate gene counts by cell types and groups
+cts_d <- AggregateExpression(merged_default,
+                             group.by = c("cluster_label", "samples"),
+                             assays = 'SCT',
+                             slot = "counts", # want the raw counts
+                             return.seurat = FALSE)
+cts_b <- AggregateExpression(merged_baysor,
+                             group.by = c("cluster_label", "samples"),
+                             assays = 'SCT',
+                             slot = "counts", # want the raw counts
+                             return.seurat = FALSE)
+cts_c <- AggregateExpression(merged_cellpose2,
+                             group.by = c("cluster_label", "samples"),
+                             assays = 'SCT',
+                             slot = "counts", # want the raw counts
+                             return.seurat = FALSE)
+```
+
+## Data manipulation
+
+```{r}
+cts_d <- cts_d$SCT
+cts_b <- cts_b$SCT
+cts_c <- cts_c$SCT
+
+# transpose
+cts_d.t <- t(cts_d)
+cts_b.t <- t(cts_b)
+cts_c.t <- t(cts_c)
+
+# convert to data.frame
+cts_d.t <- as.data.frame(cts_d.t)
+cts_b.t <- as.data.frame(cts_b.t)
+cts_c.t <- as.data.frame(cts_c.t)
+
+# get values where to split
+splitRows <- gsub('_.*', '', rownames(cts_c.t))
+
+# split data.frame - returns a list of separated data.frames
+cts.split_d <- split.data.frame(cts_d.t,
+                              f = factor(splitRows))
+cts.split_b <- split.data.frame(cts_b.t,
+                              f = factor(splitRows))
+cts.split_c <- split.data.frame(cts_c.t,
+                              f = factor(splitRows))
+
+# fix colnames and transpose
+cts.split.modified_d <- lapply(cts.split_d, function(x){
+  rownames(x) <- gsub('.*_(.*)', '\\1', rownames(x))
+  t(x)
+})
+cts.split.modified_b <- lapply(cts.split_b, function(x){
+  rownames(x) <- gsub('.*_(.*)', '\\1', rownames(x))
+  t(x)
+})
+cts.split.modified_c <- lapply(cts.split_c, function(x){
+  rownames(x) <- gsub('.*_(.*)', '\\1', rownames(x))
+  t(x)
+})
+```
+
+## Run DE analysis
+
+```{r}
+plot(density(counts_d[, 1]), ylim = c(0, 0.0006), main = "Raw counts of Cellpose samples")
+for (i in 2:ncol(counts_d)) {
+   den <- density(counts_d[, i])
+   lines(den$x, den$y)
+}
+```
+
+```{r}
+plot(density(counts_b[, 1]), ylim = c(0, 0.0013), main = "Raw counts of Baysor samples")
+for (i in 2:ncol(counts_b)) {
+   den <- density(counts_b[, i])
+   lines(den$x, den$y)
+}
+```
+
+```{r}
+plot(density(counts_c[, 1]), ylim = c(0, 0.0006), main = "Raw counts of Cellpose samples")
+for (i in 2:ncol(counts_c)) {
+   den <- density(counts_c[, i])
+   lines(den$x, den$y)
+}
+```
+
+
+### Functions 
+
+```{r}
+# perform CPM transformation on the data
+transform_data <- function(cell_type) {
+  # Get counts matrix
+  counts_d <- cts.split.modified_d[[cell_type]]
+  counts_b <- cts.split.modified_b[[cell_type]]
+  counts_c <- cts.split.modified_c[[cell_type]]
+  
+  # generate sample level metadata
+  colData <- data.frame(samples = colnames(counts_d))
+  colData <- colData %>%
+    mutate(condition = case_when(
+      grepl("ctrl", samples) ~ "control",
+      grepl("ko", samples) ~ "knockout",
+      grepl("wt", samples) ~ "wildtype",
+      TRUE ~ "unknown"  # in case none of the above match
+    )) %>%
+    column_to_rownames(var = "samples")
+  
+  # use limma to perform DE analysis
+  # Create a DGEList with counts and sample group information
+  dge_d <- DGEList(counts = counts_d, group = colData$condition)
+  dge_b <- DGEList(counts = counts_b, group = colData$condition)
+  dge_c <- DGEList(counts = counts_c, group = colData$condition)
+  
+  # CPM transformation to normalise different sequencing depths across samples
+  dge_d$logcpm <- cpm(dge_d, log = TRUE)
+  dge_b$logcpm <- cpm(dge_b, log = TRUE) 
+  dge_c$logcpm <- cpm(dge_c, log = TRUE)
+  
+  return(list("default" = dge_d, "baysor" = dge_b, "cellpose2" = dge_c))
+}
+
+# density plot to check if samples share similar count distribution
+den_plot <- function(data) {
+  plot(density(data[, 1]), main = "", xlab = "log(CPM)", xlim = c(0, 22), ylim = c(0, 0.28))
+  for (i in 2:ncol(data)) {
+    den <- density(data[, i])
+    lines(den$x, den$y)
+  }
+}
+
+# Define marker genes for each cell type
+marker_genes <- list(
+  "B cells" = c("Cd22", "Bhlhe41", "Cd19", "Ighd", "Ighm", "Bcr", "Tbx21", 
+                "Cxcr3", "Bbc3", "Bcl10", "Bcl2"),
+  "T cells" = c("Cd4", "Cd3d", "Cd3e", "Cd8a", "Trac", "Foxp3", "Cxcr3", "Bbc3", 
+                "Bcl10", "Bcl2"),
+  "GC B cells" = c("Tbx21", "Pola1", "Nek2", "H2-Q6", "Tpx2", "Gpsm2", "Rrm1", 
+                   "Ccnd3", "Akap12", "Tifa", "Cdca8", "Scn8a", "Pfn2", "Otub2", 
+                   "Fcer2a", "Ifi30", "Stx11", "Cd40", "Ankrd33b", "Cd86", 
+                   "Cd72", "Lmo4", "B3gnt5", "Serpinb6b", "Gstt2", "Actb", 
+                   "Cd83", "Bcl6", "Aicda", "Rgs13", "Cxcr3", "Bbc3"),
+  "Neutrophis" = c("Ngp", "S100a9", "Bbc3"),
+  "Macrophages" = c("Cd274", "Cd68", "Cd209b", "Adgre1", "Csf1r", "Cd80", "Hmox1", "Bbc3"),
+  "Plasma cells" = c("Cd38", "Jchain", "Cox6a2", "Siglech", "Bbc3"),
+  "Erythrocytes" = c()
+)
+
+# Helper function: label false significant genes
+mark_false_significant <- function(res, cell_type, marker_genes) {
+  # Find markers for current cell type
+  curr_markers <- marker_genes[[cell_type]]
+  
+  res <- res %>%
+    mutate(Status = case_when(
+      !(gene %in% curr_markers) & adj.P.Val < 0.05 & abs(logFC) > 1 ~ "False Significant",
+      adj.P.Val < 0.05 & logFC < -1 ~ "Significant (Downregulated)",
+      adj.P.Val < 0.05 & logFC > 1 ~ "Significant (Upregulated)",
+      TRUE ~ "Not Significant"
+    ))
+  return(res)
+}
+
+de_analysis <- function(cell_type, groups = c("kovswt", "kovsctrl", "wtvsctrl")) {
+  # Transform the aggregated count data
+  trans_data <- transform_data(cell_type)
+  dge_d <- trans_data$default
+  dge_b <- trans_data$baysor
+  dge_c <- trans_data$cellpose2
+  
+  # Filter lowly expressed genes
+  keep_d <- filterByExpr(dge_d)
+  keep_b <- filterByExpr(dge_b)
+  keep_c <- filterByExpr(dge_c)
+  dge_d <- dge_d[keep_d, , keep.lib.sizes = FALSE]
+  dge_b <- dge_b[keep_b, , keep.lib.sizes = FALSE]
+  dge_c <- dge_c[keep_c, , keep.lib.sizes = FALSE]
+  
+  # Calculate normalization factors (e.g., TMM normalization)
+  dge_d <- calcNormFactors(dge_d, method = "TMM")
+  dge_b <- calcNormFactors(dge_b, method = "TMM")
+  dge_c <- calcNormFactors(dge_c, method = "TMM")
+  
+  # Construct design matrices
+  design <- model.matrix(~0+group, data = dge_d$samples)
+  colnames(design) <- gsub("group", "", colnames(design))
+  
+  # construct matrix of custom contrasts
+  contr.matrix <- makeContrasts(
+    kovswt = knockout - wildtype,
+    kovsctrl = knockout - control,
+    wtvsctrl = wildtype - control,
+    levels = colnames(design))
+  
+  # Continue with voom and limma
+  # transform count data to log2 counts-per-million (logCPM) to remove heteroscedascity
+  v_d <- voom(dge_d, design)
+  v_b <- voom(dge_b, design)
+  v_c <- voom(dge_c, design)
+  
+  # fit linear model for each gene given a series of arrays for group comparison
+  vfit_d <- lmFit(v_d, design)
+  vfit_b <- lmFit(v_b, design)
+  vfit_c <- lmFit(v_c, design)
+  
+  # compute contrasts from linear model fits to test specific hypothesis 
+  vfit_d <- contrasts.fit(vfit_d, contrasts=contr.matrix)
+  vfit_b <- contrasts.fit(vfit_b, contrasts=contr.matrix)
+  vfit_c <- contrasts.fit(vfit_c, contrasts=contr.matrix)
+  
+  # apply empirical bayes shrinkage to standard errors for precise estimate of gene-wise variability
+  efit_d <- eBayes(vfit_d)
+  efit_b <- eBayes(vfit_b)
+  efit_c <- eBayes(vfit_c)
+  
+  # view top genes from linear model fit
+  # topTable(efit_c)
+  # topTable(efit_b)
+  
+  # # Extract the decision results for the contrast of interest
+  # testResults_c <- decideTests(efit_c)
+  # testResults_b <- decideTests(efit_b)
+  # 
+  # # Identify the row indices for downregulated genes (where the test result is -1)
+  # down_indices_c <- which(testResults_c[, groups] == -1)
+  # down_indices_b <- which(testResults_b[, groups] == -1)
+  # 
+  # # Get the gene names corresponding to these indices
+  # down_genes_c <- rownames(efit_c)[down_indices_c]
+  # down_genes_b <- rownames(efit_b)[down_indices_b]
+  # down_genes_c
+  # down_genes_b
+  
+  # Extract the DE results for the contrast of interest
+  res_d <- topTable(efit_d, coef = groups, number = Inf, adjust.method = "BH")
+  res_b <- topTable(efit_b, coef = groups, number = Inf, adjust.method = "BH")
+  res_c <- topTable(efit_c, coef = groups, number = Inf, adjust.method = "BH")
+  res_d$gene <- rownames(res_d)
+  res_b$gene <- rownames(res_b)
+  res_c$gene <- rownames(res_c)
+  
+  # Label DE status including false significant genes
+  res_d <- mark_false_significant(res_d, cell_type, marker_genes)
+  res_b <- mark_false_significant(res_b, cell_type, marker_genes)
+  res_c <- mark_false_significant(res_c, cell_type, marker_genes)
+  
+  return(list("default" = res_d, "baysor" = res_b, "cellpose2" = res_c))
+}
+
+de_res <- function(cell_type) {
+  groups <- c("kovswt", "kovsctrl", "wtvsctrl")
+  res <- lapply(groups, function(grp) de_analysis(cell_type, grp))
+  res <- lapply(seq_along(groups), function(i) {
+    res[[i]][["default"]]$segmentation <- "default"
+    res[[i]][["baysor"]]$segmentation <- "baysor"
+    res[[i]][["cellpose2"]]$segmentation <- "cellpose2"
+    merged_res <- rbind(res[[i]][["default"]], res[[i]][["baysor"]], res[[i]][["cellpose2"]])
+    merged_res$group <- groups[i]
+    merged_res$group <- factor(merged_res$group, levels = groups)
+    merged_res$segmentation <- factor(merged_res$segmentation, levels = c("default", "baysor", "cellpose2"))
+    merged_res
+  })
+  do.call(rbind, res)
+}
+
+# visualise significant genes
+volcano_plot <- function(res, cell_type) {
+  ggplot(res, aes(x = logFC, y = -log10(adj.P.Val), color = Status)) +
+    geom_point(size = 2, alpha = 0.8) +
+    # Define colors: red for significant down, blue for significant up, gray for non-significant
+    scale_color_manual(values = c("Significant (Downregulated)" = "orchid3",
+                                "Significant (Upregulated)" = "skyblue3",
+                                "False Significant" = "red",
+                                "Not Significant" = "black")) +
+    # Add reference lines: vertical line at 0 and horizontal line at p=0.05 threshold
+    geom_vline(xintercept = -1, linetype = "dashed", color = "darkred") +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "darkred") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+    # Center the x-axis by setting limits from -3 to 3
+    scale_x_continuous(limits = c(-4, 4)) +
+    # Add plot title and axis labels 
+    labs(title = cell_type,
+         x = "Log2 Fold Change",
+         y = "-Log10(adj P-value)",
+         color = "DE Status") +
+    facet_grid(rows = vars(group), cols = vars(segmentation)) + 
+    # Use a theme with a border
+    theme_bw() +
+    theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+          plot.title = element_text(size = 16, hjust = 0.5, face = "bold"), # center the title
+          strip.text = element_text(size = 12)) + 
+    # Annotate the significant downregulated genes with their gene names
+    geom_label_repel(
+      data = subset(res, Status %in% c("Significant (Downregulated)", "Significant (Upregulated)")),
+      aes(label = gene),
+      box.padding = 0.35,
+      point.padding = 0.5,
+      point.size = 0.3,
+      segment.color = "black",
+      show.legend = FALSE, 
+      size = 4)
+}
+```
+
+### Density plots
+
+Check the count distribution across samples.
+
+According to the below density plots, the samples in all cell types have log(cpm) greater than 2. It seems like the dataset already filtered out lowly expressed genes. 
+
+```{r}
+cell_types <- unique(merged_default$cluster_label)
+trans_data <- lapply(cell_types, function(cell_type) transform_data(cell_type))
+names(trans_data) <- cell_types
+
+for (cell_type in cell_types) {
+  data <- trans_data[[cell_type]]
+  den_plot(data$default$logcpm)
+  title(main = paste("Transformed default data:", cell_type))
+  den_plot(data$baysor$logcpm)
+  title(main = paste("Transformed baysor data:", cell_type))
+  den_plot(data$cellpose2$logcpm)
+  title(main = paste("Transformed cellpose2 data:", cell_type))
+}
+```
+
+### B cells
+
+```{r fig.width=12, fig.height=8}
+b_cell_res <- de_res("B cells")
+volcano_plot(b_cell_res, "B cells")
+```
+
+### GC B cells
+
+```{r fig.width=10, fig.height=8}
+gc_b_cell_res <- de_res("GC B cells")
+volcano_plot(gc_b_cell_res, "GC B cells")
+```
+
+### T cells
+
+```{r fig.width=10, fig.height=8}
+t_cell_res <- de_res("T cells")
+volcano_plot(t_cell_res, "T cells")
+```
+
+### Macrophages
+
+```{r fig.width=10, fig.height=8}
+mac_res <- de_res("Macrophages")
+volcano_plot(mac_res, "Macrophages")
+```
+
+### Neutrophils
+
+```{r fig.width=10, fig.height=8}
+neu_res <- de_res("Neutrophils")
+volcano_plot(neu_res, "Neutrophils")
+```
+
+### Erythrocytes
+
+```{r fig.width=10, fig.height=8}
+erythrocyte_res <- de_res("Erythrocytes")
+volcano_plot(erythrocyte_res, "Erythrocytes")
+```
+
+### Plasma cells
+
+```{r fig.width=10, fig.height=8}
+plas_cell_res <- de_res("Plasma cells")
+volcano_plot(plas_cell_res, "Plasma cells")
+```
+
+## Volcano plots on selected cell types
+
+Select B cells, GC B cells, and T cells on the kovswt comparison.
+
+```{r fig.width=10, fig.height=8}
+# Step 1: Define cell types and contrast
+cell_types <- c("B cells", "GC B cells", "T cells")
+contrast <- "kovswt"
+
+# Step 2: Run DE analysis for each cell type (only kovswt)
+de_list <- lapply(cell_types, function(ct) {
+  res <- de_analysis(cell_type = ct, groups = contrast)
+  
+  # combine segmentation results and add metadata
+  merged_res <- rbind(
+    res[["default"]]  %>% mutate(segmentation = "Default"),
+    res[["baysor"]]   %>% mutate(segmentation = "Baysor"),
+    res[["cellpose2"]] %>% mutate(segmentation = "Cellpose2")
+  )
+  merged_res$cell_type <- ct
+  merged_res
+})
+
+# Step 3: Combine all into one dataframe
+res_all <- do.call(rbind, de_list)
+
+# Ensure factors are ordered for consistent facet layout
+res_all$segmentation <- factor(res_all$segmentation, levels = c("Default", "Baysor", "Cellpose2"))
+res_all$cell_type <- factor(res_all$cell_type, levels = cell_types)
+
+# Step 4: Plot all together
+volcano_plots <- ggplot(res_all, aes(x = logFC, y = -log10(adj.P.Val), color = Status)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = c(
+    "Significant (Downregulated)" = "orchid3",
+    "Significant (Upregulated)" = "skyblue3",
+    "False Significant" = "red",
+    "Not Significant" = "black"
+  )) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "darkred") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  scale_x_continuous(limits = c(-4, 4)) +
+  labs(
+    title = "",
+    x = "Log2 Fold Change",
+    y = "-Log10(adj P-value)",
+    color = "DE Status"
+  ) +
+  facet_grid(rows = vars(segmentation), cols = vars(cell_type)) +
+  theme_bw() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.title = element_text(size = 16, hjust = 0.5, face = "bold"),
+    strip.text = element_text(size = 12),
+    legend.position = "bottom"
+  ) +
+  geom_label_repel(
+    data = subset(res_all, Status %in% c("Significant (Downregulated)", "Significant (Upregulated)")),
+    aes(label = gene),
+    box.padding = 0.35,
+    point.padding = 0.5,
+    point.size = 0.3,
+    segment.color = "black",
+    show.legend = FALSE,
+    size = 3.5
+  )
+ggsave("figures/volcano_plots.pdf", plot = volcano_plots, width = 10, height = 8, dpi = 300)
+volcano_plots
+```
+
+False significant genes
+
+```{r fig.width=4, fig.height=3}
+false_genes <- res_all %>% 
+  filter(Status == "False Significant") %>%
+  select(gene, segmentation, cell_type)
+
+false_genes$segmentation <- factor(
+  false_genes$segmentation,
+  levels = c("Default", "Baysor", "Cellpose2"),
+  labels = c("Cellpose1", "Baysor", "Cellpose2")
+)
+
+false_gene_counts <- false_genes %>% 
+  group_by(segmentation, cell_type) %>% 
+  summarise(counts = n(), .groups = "drop")
+
+cols <- c("T cells" = "yellowgreen", 
+          "Erythrocytes" = "violet", 
+          "Neutrophils" = "mediumblue", 
+          "B cells" = "tomato", 
+          "Plasma cells" = "thistle1", 
+          "GC B cells" = "yellow", 
+          "Macrophages" = "skyblue2",
+          "Endothelial cells" = "orange")
+
+false_gene_count_plt <- ggplot(
+  false_gene_counts, 
+  aes(x = segmentation, y = counts, fill = cell_type)
+) +
+  geom_col() + 
+  geom_text(
+    aes(label = counts),
+    # centers label within each bar segment
+    position = position_stack(vjust = 0.5), 
+    color = "black", 
+    size = 3.5
+  ) +
+  scale_y_continuous(n.breaks = 8) + 
+  scale_fill_manual(values = cols) + 
+  labs(x = "Segmentations",
+       y = "False significant gene counts",
+       fill = "Cell types") + 
+  theme_bw()
+ggsave("figures/false_gene_count.pdf", plot = false_gene_count_plt,
+       width = 4, height = 3, dpi = 300)
+false_gene_count_plt
+```
+
+```{r fig.width=5, fig.height=5}
+library(VennDiagram)
+library(grid)
+
+unique_false_genes <- false_genes %>% 
+  group_by(segmentation) %>% 
+  summarise(genes = list(unique(gene))) %>% 
+  deframe()
+
+# Aggregated False Significant Genes (B, GC B, T cells)
+venn_false <- venn.diagram(
+    x = unique_false_genes,
+    category.names = c("Cellpose1", "Baysor", "Cellpose2"),
+    filename = NULL,
+    fill = scales::hue_pal()(3),
+    alpha = 0.5,
+    cex = 1.2,
+    cat.cex = 1.2,
+    main = ""
+  )
+
+pdf("figures/venn_false_genes.pdf", width = 5, height = 5)
+grid.newpage()
+grid.draw(do.call(grobTree, venn_false))
+dev.off()
+```
+
+Find false significant genes commonly present in all segmentation methods
+
+```{r}
+Reduce(intersect, unique_false_genes)
+```
+
+Find genes only present in one segmentation method. 
+
+```{r}
+setdiff(
+  unique_false_genes$Baysor,
+  unlist(unique_false_genes[names(unique_false_genes) != "Baysor"])
+)
+```
+
+```{r}
+setdiff(
+  unique_false_genes$Cellpose1,
+  unlist(unique_false_genes[names(unique_false_genes) != "Cellpose1"])
+)
+```
+
+```{r}
+setdiff(
+  unique_false_genes$Cellpose2,
+  unlist(unique_false_genes[names(unique_false_genes) != "Cellpose2"])
+)
+```
+
+
+## Venn Diagram
+
+Aggregate false significant and significant genes across B cells, GC B cells and T cells. 
+
+```{r fig.width=8, fig.height=4}
+library(VennDiagram)
+library(gridExtra)
+library(dplyr)
+
+aggregate_venn_across_celltypes <- function(cell_types = c("B cells", "GC B cells", "T cells"),
+                                            contrast = "kovswt") {
+  # Collect all DE results across cell types
+  all_results <- lapply(cell_types, function(ct) {
+    res_list <- de_analysis(ct, contrast)
+    
+    # Combine and add metadata
+    merged_res <- rbind(
+      res_list$default   %>% mutate(segmentation = "default",   cell_type = ct),
+      res_list$baysor    %>% mutate(segmentation = "baysor",    cell_type = ct),
+      res_list$cellpose2 %>% mutate(segmentation = "cellpose2", cell_type = ct)
+    )
+    merged_res
+  }) %>% bind_rows()
+  
+  # --- Aggregate across cell types ---
+  # True significant genes (union across cell types for each segmentation)
+  sig_genes <- all_results %>%
+    filter(adj.P.Val < 0.05, abs(logFC) > 1, Status != "False Significant") %>%
+    group_by(segmentation) %>%
+    summarise(genes = list(unique(gene))) %>%
+    deframe()
+  
+  # False significant genes (union across cell types)
+  false_genes <- all_results %>%
+    filter(Status == "False Significant") %>%
+    group_by(segmentation) %>%
+    summarise(genes = list(unique(gene))) %>%
+    deframe()
+  
+  # --- Create Venn diagrams ---
+  venn_true <- venn.diagram(
+    x = sig_genes,
+    category.names = c("Default", "Baysor", "Cellpose2"),
+    filename = NULL,
+    fill = c("orchid3", "skyblue3", "gray70"),
+    alpha = 0.5,
+    cex = 1.2,
+    cat.cex = 1.2,
+    main = "Aggregated True Significant Genes (B, GC B, T cells)"
+  )
+  
+  venn_false <- venn.diagram(
+    x = false_genes,
+    category.names = c("Default", "Baysor", "Cellpose2"),
+    filename = NULL,
+    fill = c("red", "orange", "darkred"),
+    alpha = 0.5,
+    cex = 1.2,
+    cat.cex = 1.2,
+    main = "Aggregated False Significant Genes (B, GC B, T cells)"
+  )
+  
+  grid.arrange(grobTree(venn_true), grobTree(venn_false), ncol = 2)
+}
+
+# Run it
+aggregate_venn_across_celltypes(c("B cells", "GC B cells", "T cells"), "kovswt") 
+```
+
+
+## UpSet plot
+
+### Table of significant genes
+
+Prepare data.frame for UpSet plot in KO vs WT comparison.
+
+```{r}
+signif_res <- list(b_cell_res, gc_b_cell_res, t_cell_res, mac_res, neu_res, erythrocyte_res, plas_cell_res)
+cell_types <- c("B cells", "GC B cells", "T cells", "Macrophages", "Neutrophils", "Erythrocytes", "Plasma cells")
+for (i in seq_along(signif_res)) {
+  signif_ids <- grep("^Significant", signif_res[[i]]$Status)
+  signif_res[[i]] <- signif_res[[i]][signif_ids, ]
+  if (nrow(signif_res[[i]]) > 0) {
+    signif_res[[i]]$celltype <- cell_types[i]
+  }
+}
+signif_res <- do.call(rbind, signif_res)
+rownames(signif_res) <- NULL
+
+# sanity check
+table(signif_res$Status)
+
+# prepare table in wide format
+signif_table <- signif_res %>% 
+  filter(group == "kovswt") %>% 
+  mutate(Regulation = case_when(
+    Status == "Significant (Downregulated)" ~ "Down",
+    Status == "Significant (Upregulated)" ~ "Up",
+    TRUE ~ "other"
+  )) %>% 
+  select(gene, segmentation, celltype, Regulation) %>% 
+  mutate(value = 1) %>% # marker for membership
+  pivot_wider(
+    # keep gene + regulation + segmentation as identifiers
+    id_cols = c(gene, Regulation, segmentation),  
+    names_from = celltype,          # make columns from cell types
+    values_from = value,            # fill with 1s
+    values_fill = list(value = 0)   # replace missing with 0
+  )
+
+# add any missing cell types which do not have DE genes
+miss_id <- !cell_types %in% colnames(signif_table)[-c(1:3)]
+miss_celltype <- cell_types[miss_id]
+for (cell in miss_celltype) {
+  signif_table[, cell] <- 0
+}
+```
+
+### Plot
+
+```{r}
+default_signif <- signif_table %>% filter(segmentation == "default")
+default_upset <- upset(default_signif, 
+      intersect = colnames(default_signif)[-c(1:3)], # cell type columns
+      sort_sets = FALSE,
+      base_annotations = list(
+        'Intersection size' = intersection_size(
+          counts = TRUE,
+          mapping = aes(fill = Regulation)
+        ) + scale_fill_manual(values = c(
+            "Down" = "orchid3", 
+            "Up" = "skyblue3"
+            ))
+        ),
+      width_ratio = 0.1) 
+```
+
+```{r}
+baysor_signif <- signif_table %>% filter(segmentation == "baysor")
+baysor_upset <- upset(baysor_signif, 
+      intersect = colnames(baysor_signif)[-c(1:3)], # cell type columns
+      sort_sets = FALSE,
+      base_annotations = list(
+        'Intersection size' = intersection_size(
+          counts = TRUE,
+          mapping = aes(fill = Regulation)
+        ) + scale_fill_manual(values = c(
+            "Down" = "orchid3", 
+            "Up" = "skyblue3"
+            ))
+        ),
+      width_ratio = 0.1) 
+```
+
+```{r}
+cellpose2_signif <- signif_table %>% filter(segmentation == "cellpose2")
+cellpose2_upset <- upset(cellpose2_signif, 
+      intersect = colnames(cellpose2_signif)[-c(1:3)], # cell type columns
+      sort_sets = FALSE,
+      base_annotations = list(
+        'Intersection size' = intersection_size(
+          counts = TRUE,
+          mapping = aes(fill = Regulation)
+        ) + scale_fill_manual(values = c(
+            "Down" = "orchid3", 
+            "Up" = "skyblue3"
+            ))
+        ),
+      width_ratio = 0.1) 
+```
+
+All-in-one
+
+```{r fig.width=16, fig.height=5}
+(default_upset | baysor_upset | cellpose2_upset) + plot_layout(guides = "collect")
+```
+
+Find downregulated genes in neutrophils.
+
+```{r}
+signif_table %>% 
+  filter(Neutrophils == 1) %>% 
+  select(gene, Regulation, segmentation, Neutrophils) %>% 
+  group_by(gene, Regulation) %>% 
+  summarise(count = n(), .groups = "drop") %>% 
+  arrange(desc(count))
+```
+
+Find downregulated genes in Erythrocytes.
+
+```{r}
+signif_table %>% 
+  filter(Erythrocytes == 1) %>% 
+  select(gene, Regulation, segmentation, Erythrocytes) %>% 
+  group_by(gene, Regulation) %>% 
+  summarise(count = n())
+```
+
+B cells
+
+Cell migration: Cxcr3
+
+Macrophage markers: Adgre1, Cd209b
+
+GC B cell marker: Akap12, Cd83
+
+B cell marker: Bhlhe41
+
+White pulp stromal cells: Ccl19
+
+Endothelial cells: Egfl7
+
+DC: Ppt1
+
+```{r}
+signif_table %>% 
+  filter(`B cells` == 1) %>% 
+  select(gene, Regulation, segmentation, `B cells`) %>% 
+  group_by(gene, Regulation) %>% 
+  summarise(count = n(), .groups = "drop") %>% 
+  arrange(desc(count))
+```
+
+GC B cells
+
+GC B cell markers: Akap12, Gstt2, Cd72, Fcer2a
+
+Cell migration: Cxcr3
+
+Macrophage markers: Adgre1
+
+White blood cell/ everything: Bbc3
+
+B cell marker: Ighd
+
+```{r}
+signif_table %>% 
+  filter(`GC B cells` == 1) %>% 
+  select(gene, Regulation, segmentation, `GC B cells`) %>% 
+  group_by(gene, Regulation) %>% 
+  summarise(count = n(), .groups = "drop") %>% 
+  arrange(desc(count))
+```
+
+
+# Proprotion of B cells and GC B cells per sample
+
+```{r}
+cell_types_c <- merged_cellpose@meta.data[, c("manual_label", "nCount_Vizgen", "nFeature_Vizgen", "sample_id", "stim", "samples")]
+cell_types_c$segmentation <- "cellpose"
+cell_types_b <- merged_baysor@meta.data[, c("manual_label", "nCount_Vizgen", "nFeature_Vizgen", "sample_id", "stim", "samples")]
+cell_types_b$segmentation <- "baysor"
+cell_types <- rbind(cell_types_c, cell_types_b)
+
+cell_prop <- cell_types %>% 
+  group_by(segmentation, samples) %>% 
+  summarise(
+    b_cell_count = sum(manual_label == "B cells"), 
+    gc_b_cell_count = sum(manual_label == "GC B cells"),
+    total_cells = n(),
+    b_cell_prop = b_cell_count / total_cells,
+    gc_b_cell_prop = gc_b_cell_count / total_cells,
+    .groups = "drop"
+  )
+```
+
+GC B cell count across sample
+
+```{r}
+ggplot(cell_prop, aes(x = samples, y = gc_b_cell_count, fill = segmentation)) + 
+  geom_col(position = "dodge") + 
+  labs(x = "Samples",
+       y = "GC B cell counts",
+       fill = "Segmentation") + 
+  theme_bw()
+```
+
+GC B cell proportion across sample
+
+```{r}
+ggplot(cell_prop, aes(x = samples, y = gc_b_cell_prop, fill = segmentation)) + 
+  geom_col(position = "dodge") + 
+  labs(x = "Samples",
+       y = "Proportion of GC B cells",
+       fill = "Segmentation") + 
+  theme_bw()
+```
+
+Proportion of GC B cells per segmentation
+
+```{r}
+ggplot(cell_prop, aes(x = segmentation, y = gc_b_cell_prop, fill = segmentation)) +
+  geom_boxplot() + 
+  labs(x = "Segmentation",
+       y = "Proportion of GC B cells") + 
+  theme_bw() + 
+  theme(legend.position = "none")
+```
+
+Counts per cell type
+
+```{r fig.width=10, fig.height=10}
+ggplot(cell_types, aes(x = samples, y = nCount_Vizgen, fill = segmentation)) +
+  geom_violin(scale = "width", trim = FALSE) +
+  geom_boxplot(aes(group = interaction(samples, segmentation)), 
+               width = 0.2, outlier.shape = NA, fill = "white", color = "black",
+               position = position_dodge(0.9)) +
+  facet_wrap(~manual_label, ncol = 2, scales = "free_y") + 
+  labs(x = "Samples",
+       y = "Counts per cell",
+       fill = "Segmentation") + 
+  theme_bw()
+```
+
+Median counts of GC B cells per sample
+
+```{r fig.width=3, fig.height=4}
+counts_med <- cell_types %>% 
+  filter(manual_label == "GC B cells") %>% 
+  group_by(segmentation, samples) %>% 
+  summarise(counts_med = median(nCount_Vizgen), .groups = "drop") %>% 
+  ungroup()
+ggplot(counts_med, aes(x = segmentation, y = counts_med, fill = segmentation)) +
+  geom_boxplot() + 
+  labs(x = "Segmentation",
+       y = "Meidan counts of GC B cells per sample") + 
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+Genes per cell type
+
+```{r fig.width=10, fig.height=10}
+ggplot(cell_types, aes(x = samples, y = nFeature_Vizgen, fill = segmentation)) +
+  geom_violin(scale = "width", trim = FALSE) +
+  geom_boxplot(aes(group = interaction(samples, segmentation)), 
+               width = 0.2, outlier.shape = NA, fill = "white", color = "black",
+               position = position_dodge(0.9)) +
+  facet_wrap(~manual_label, ncol = 2) + 
+  labs(x = "Samples",
+       y = "Counts per cell",
+       fill = "Segmentation") + 
+  theme_bw()
+```
+
+Median genes of GC B cells per sample
+
+```{r fig.width=3, fig.height=4}
+genes_med <- cell_types %>% 
+  filter(manual_label == "GC B cells") %>% 
+  group_by(segmentation, samples) %>% 
+  summarise(genes_med = median(nFeature_Vizgen), .groups = "drop") %>% 
+  ungroup()
+ggplot(genes_med, aes(x = segmentation, y = genes_med, fill = segmentation)) +
+  geom_boxplot() +
+  labs(x = "Segmentation",
+       y = "Median genes of GC B cells per sample") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+
+
